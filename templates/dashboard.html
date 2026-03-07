@@ -88,7 +88,38 @@
                     <button type="submit">Spend</button>
                 </form>
             </div>
-
+            <div class="card full">
+                <h3>Recent Spending History</h3>
+                <div style="overflow-x: auto;">
+                    <table style="width: 100%; border-collapse: collapse; margin-top: 10px;">
+                        <thead>
+                            <tr style="border-bottom: 1px solid #334155; color: var(--text-muted); text-align: left;">
+                                <th style="padding: 10px;">Date</th>
+                                <th style="padding: 10px; text-align: right;">Amount (KES)</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {% if history %}
+                            {% for record in history %}
+                            <tr style="border-bottom: 1px solid rgba(255,255,255,0.05);">
+                                <td style="padding: 10px; font-size: 0.9rem;">{{ record.date }}</td>
+                                <td
+                                    style="padding: 10px; text-align: right; color: var(--accent-red); font-weight: bold;">
+                                    -{{ record.amount }}
+                                </td>
+                            </tr>
+                            {% endfor %}
+                            {% else %}
+                            <tr>
+                                <td colspan="2" style="padding: 20px; text-align: center; color: var(--text-muted);">
+                                    No spending recorded yet. Keep up the discipline!
+                                </td>
+                            </tr>
+                            {% endif %}
+                        </tbody>
+                    </table>
+                </div>
+            </div>
             <div class="card full" style="border-top: 4px solid var(--accent-red); margin-top: 20px;">
                 <h3>Danger Zone</h3>
                 <p style="font-size: 0.8rem; color: var(--text-muted);">Completely broken your budget? Start a fresh
@@ -98,6 +129,20 @@
                     <button type="submit"
                         style="background: transparent; color: var(--accent-red); border: 1px solid var(--accent-red); padding: 10px; border-radius: 8px; cursor: pointer; width: 100%;">Reset
                         Entire Plan</button>
+                </form>
+            </div>
+            <div class="card full highlight" style="margin-top: 20px; border-top: 4px solid var(--accent-blue);">
+                <h3>Start New Plan / Top-up</h3>
+                <p style="font-size: 0.8rem; color: var(--text-muted);">Ready for the next month? Enter your allowance
+                    details below.</p>
+                <form action="/topup" method="POST">
+                    <input type="number" name="money" placeholder="New Allowance Amount (KES)" required>
+                    <input type="number" name="days" placeholder="Days to Survive" required>
+
+                    <label style="font-size: 0.8rem;">Emergency Buffer (%):</label>
+                    <input type="number" name="buffer_percent" value="10" required>
+
+                    <button type="submit" style="background: var(--accent-blue);">Start New Cycle</button>
                 </form>
             </div>
         </div>

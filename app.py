@@ -240,5 +240,62 @@ def logout():
     session.clear()
     return redirect("/")
 
+@app.route("/topup", methods=["POST"])
+def topup():
+    student_id = session.get("student_id")
+    try:
+        new_money = float(request.form.get("money"))
+        new_days = int(request.form.get("days"))
+        buffer_pct = float(request.form.get("buffer_percent", 10)) / 100
+        
+        if new_money <= 0 or new_days <= 0:
+            flash("Amount and days must be positive.")
+            return redirect("/dashboard")
+    except:
+        flash("Invalid input values.")
+        return redirect("/dashboard")
+
+    # Recalculate everything for the new period
+    emergency = round(new_money * buffer_pct, 2)
+    daily_rate = round((new_money - emergency) / new_days, 2)
+    sealed = round(new_money - emergency - daily_rate, 2)
+    
+    cursor.execute("""
+        UPDATE students SET 
+        usable_balance = ?, 
+        sealed_balance = ?, 
+        emergency_fund = ?, 
+        daily_rate = ?, 
+        days_in_plan = ?,
+        last_day = ?
+        WHERE id = ?
+    """, (daily_rate, sealed, emergency, daily_rate, new_days, today_str(), student_id))
+    db.commit()
+    
+    flash(f"Top-up successful! New daily limit: KES {daily_rate}")
+    return redirect("/dashboard")
+
+@app.route("/dashboard")
+def dashboard():
+    student_id = session.get("student_id")
+    if not student_id: return redirect("/")
+    
+    s = get_student(student_id)
+    
+    # ... (Keep your existing Daily Release and Streak logic here) ...
+
+    # NEW: Fetch recent spending history (Last 10 transactions)
+    cursor.execute("""
+        SELECT date, amount 
+        FROM spending 
+        WHERE student_id = ? 
+        ORDER BY id DESC 
+        LIMIT 10
+    """, (student_id,))
+    history = cursor.fetchall()
+
+    # ... (Keep your existing 'data' dictionary and badge logic) ...
+
+    return render_template("dashboard.html", data=data, badge=badge, history=history)
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=10000, debug=True)
