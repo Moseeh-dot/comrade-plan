@@ -1,122 +1,61 @@
 <!DOCTYPE html>
-<html>
+<html lang="en">
 
 <head>
-    <title>Comrade Dashboard</title>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Comrade Plan Dashboard</title>
     <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
 </head>
 
 <body>
-
     <div class="container">
+        <header>
+            <h1>Habari, {{ s['name'] }}!</h1>
+            <p class="status">Day {{ s['days_remaining'] }} of your plan | <span>Streak: {{ s['streak'] }} days</span>
+            </p>
+        </header>
 
-        <h1>Comrade Budget Dashboard</h1>
-
-        <div class="dashboard">
-
-            <div class="card">
-                <h3>Survival Mode</h3>
-
-                <p>Your money can survive</p>
-
-                <h2>{{data.survival_days}} days</h2>
-
+        <div class="dashboard-grid">
+            <div class="card highlight">
+                <h3>Usable Today</h3>
+                <h2 class="money">KES {{ s['usable_balance'] }}</h2>
+                <div class="progress-bar">
+                    <div class="progress-fill" style="width: {{ progress }}%"></div>
+                </div>
+                <p>Daily Rate: KES {{ s['daily_rate'] }}</p>
             </div>
 
-            {% if data.survival_days <= 3 %} <p class="warning">⚠ Critical: money almost finished</p>
+            <div class="card vault">
+                <h3>The Vault (Sealed)</h3>
+                <p>Locked away for future days</p>
+                <h2 class="money-muted">KES {{ s['sealed_balance'] }}</h2>
+            </div>
+
+            <div class="card emergency">
+                <h3>Emergency Buffer (10%)</h3>
+                <p>Untouchable Savings</p>
+                <h2>KES {{ s['emergency_fund'] }}</h2>
+            </div>
+
+            <div class="card action-card">
+                <h3>Record Spending</h3>
+                <form action="/spend" method="POST">
+                    <input type="number" name="amount" step="0.01" placeholder="Amount (KES)" required>
+                    <button type="submit" class="btn-spend">Log Expense</button>
+                </form>
+                {% with messages = get_flashed_messages() %}
+                {% if messages %}
+                <p class="warning">{{ messages[0] }}</p>
                 {% endif %}
-
-                <div class="card">
-                    <h3>Balance</h3>
-                    <p>KES {{data.balance}}</p>
-                </div>
-
-                <div class="card">
-                    <h3>Daily Limit</h3>
-                    <p>KES {{data.daily_limit}}</p>
-                </div>
-
-                <div class="card full">
-
-                    <h3>Daily Spending Progress</h3>
-
-                    <p>Limit: KES {{data.daily_limit}}</p>
-
-                    <div class="progress-container">
-
-                        <div class="progress-bar">
-
-                            <div class="progress-fill"
-                                style="width: {{ (data.spent_today / data.daily_limit) * 100 | int }}%;"></div>
-
-                        </div>
-
-                    </div>
-
-                    <p>Spent Today: KES {{data.spent_today}}</p>
-
-                </div>
-
-                <div class="card">
-                    <h3>Spent Today</h3>
-                    <p>KES {{data.spent_today}}</p>
-                </div>
-
-                <div class="card">
-                    <h3>Number of Days</h3>
-                    <p>{{data.days_in_plan}}</p>
-                </div>
-
-                <div class="card">
-                    <h3>Streak</h3>
-                    <p>{{data.streak}} days</p>
-                </div>
-
-                <div class="card">
-                    <h3>Badge</h3>
-                    <p class="badge">{{badge}}</p>
-                </div>
-
-                <div class="card full">
-
-                    <h3>Record Spending</h3>
-
-                    <form action="/spend" method="POST">
-
-                        <input type="number" name="amount" placeholder="Amount spent" required>
-
-                        <button type="submit">Record Spending</button>
-
-                    </form>
-
-                </div>
-
-                <div class="card full">
-
-                    <h3>Add Money</h3>
-
-                    <form action="/topup" method="POST">
-
-                        <input type="number" name="amount" placeholder="Amount" required>
-
-                        <input type="number" name="days" placeholder="Days to budget" required>
-
-                        <button type="submit">Add Budget</button>
-
-                    </form>
-
-                </div>
-
-                {% if warning %}
-                <div class="card full">
-                    <p class="warning">{{warning}}</p>
-                </div>
-                {% endif %}
-
+                {% endwith %}
+            </div>
         </div>
 
+        <footer>
+            <a href="/logout" class="logout-link">End Session</a>
+        </footer>
     </div>
-
 </body>
 
 </html>
