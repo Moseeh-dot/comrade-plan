@@ -1,13 +1,24 @@
 from flask import Flask, render_template, request, redirect, session, flash
+from flask_mail import Mail, Message
 import sqlite3
+import secrets
 import os
 from datetime import date
 from werkzeug.security import generate_password_hash, check_password_hash
 
 app = Flask(__name__)
-app.secret_key = "comrade_secret_key_2026"
+app.secret_key = os.environ.get("SECRET_KEY", "comrade_discipline_2026")
 
-# ---------- DATABASE ----------
+# ---------- MAIL CONFIGURATION ----------
+# Replace these with your actual SMTP details (e.g., Gmail App Password)
+app.config['MAIL_SERVER'] = 'smtp.gmail.com'
+app.config['MAIL_PORT'] = 587
+app.config['MAIL_USE_TLS'] = True
+app.config['MAIL_USERNAME'] = os.environ.get("MAIL_USER") 
+app.config['MAIL_PASSWORD'] = os.environ.get("MAIL_PASS")
+mail = Mail(app)
+
+# ---------- DATABASE SETUP ----------
 def get_db():
     conn = sqlite3.connect("budget.db", check_same_thread=False)
     conn.row_factory = sqlite3.Row
@@ -16,7 +27,7 @@ def get_db():
 db = get_db()
 cursor = db.cursor()
 
-# Updated schema for Sealed Balance, Emergency Buffer, and Parent PIN
+# Unified Schema for all features: Vault, Emergency, Streaks, and Security
 cursor.execute("""
 CREATE TABLE IF NOT EXISTS students (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -30,17 +41,29 @@ CREATE TABLE IF NOT EXISTS students (
     days_in_plan INTEGER,
     streak INTEGER DEFAULT 0,
     last_day TEXT,
-    parent_pin TEXT DEFAULT '1234'
+    parent_pin TEXT DEFAULT '1234',
+    reset_token TEXT
 )
 """)
-cursor.execute("CREATE TABLE IF NOT EXISTS spending (id INTEGER PRIMARY KEY AUTOINCREMENT, student_id INTEGER, date TEXT, amount REAL)")
+cursor.execute("""
+CREATE TABLE IF NOT EXISTS spending (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, 
+    student_id INTEGER, 
+    date TEXT, 
+    amount REAL
+)
+""")
 db.commit()
 
 # ---------- HELPERS ----------
 def today_str():
     return date.today().isoformat()
 
-# ---------- ROUTES ----------
+def get_student(student_id):
+    cursor.execute("SELECT * FROM students WHERE id=?", (student_id,))
+    return cursor.fetchone()
+
+# ---------- AUTH ROUTES ----------
 @app.route("/")
 def index():
     if 'student_id' in session: return redirect("/dashboard")
@@ -55,16 +78,14 @@ def register():
         try:
             total_money = float(request.form["money"])
             days = int(request.form["days"])
-            buffer_input = float(request.form.get("buffer_percent", 10))
-            buffer_ratio = buffer_input / 100
-        except ValueError:
-            flash("Invalid numbers entered.")
+            buffer_pct = float(request.form.get("buffer_percent", 10)) / 100
+        except:
+            flash("Invalid input values.")
             return redirect("/register")
 
-        # ACCOUNTING LOGIC: User-Defined Buffer
-        emergency = round(total_money * buffer_ratio, 2)
+        # ACCOUNTING LOGIC: Initial Allocation
+        emergency = round(total_money * buffer_pct, 2)
         daily_rate = round((total_money - emergency) / days, 2)
-        # First day's allowance is usable; the rest is sealed
         sealed = round(total_money - emergency - daily_rate, 2)
         
         hashed = generate_password_hash(password)
@@ -82,7 +103,8 @@ def register():
 
 @app.route("/login", methods=["POST"])
 def login():
-    email, password = request.form["email"].strip().lower(), request.form["password"]
+    email = request.form["email"].strip().lower()
+    password = request.form["password"]
     cursor.execute("SELECT id, password FROM students WHERE email=?", (email,))
     row = cursor.fetchone()
     if row and check_password_hash(row["password"], password):
@@ -91,15 +113,15 @@ def login():
     flash("Invalid credentials.")
     return redirect("/")
 
+# ---------- DASHBOARD & CORE LOGIC ----------
 @app.route("/dashboard")
 def dashboard():
     student_id = session.get("student_id")
     if not student_id: return redirect("/")
     
-    cursor.execute("SELECT * FROM students WHERE id=?", (student_id,))
-    s = cursor.fetchone()
+    s = get_student(student_id)
     
-    # Check for Daily Release (Ported from your initial idea)
+    # DAILY RELEASE LOGIC: Unseal daily allowance on a new day
     if s["last_day"] != today_str():
         release = min(s["daily_rate"], s["sealed_balance"])
         cursor.execute("""
@@ -111,8 +133,7 @@ def dashboard():
             last_day = ? WHERE id = ?
         """, (release, release, today_str(), student_id))
         db.commit()
-        cursor.execute("SELECT * FROM students WHERE id=?", (student_id,))
-        s = cursor.fetchone()
+        s = get_student(student_id)
 
     cursor.execute("SELECT SUM(amount) as total FROM spending WHERE student_id=? AND date=?", (student_id, today_str()))
     spent_today = cursor.fetchone()["total"] or 0.0
@@ -133,47 +154,91 @@ def dashboard():
 @app.route("/spend", methods=["POST"])
 def spend():
     amt = float(request.form["amount"])
-    cursor.execute("SELECT usable_balance FROM students WHERE id=?", (session['student_id'],))
-    usable = cursor.fetchone()[0]
-    
-    if amt <= usable:
-        cursor.execute("UPDATE students SET usable_balance = usable_balance - ? WHERE id=?", (amt, session['student_id']))
-        cursor.execute("INSERT INTO spending (student_id, date, amount) VALUES (?,?,?)", (session['student_id'], today_str(), amt))
+    s = get_student(session['student_id'])
+    if amt <= s["usable_balance"]:
+        cursor.execute("UPDATE students SET usable_balance = usable_balance - ? WHERE id=?", (amt, s["id"]))
+        cursor.execute("INSERT INTO spending (student_id, date, amount) VALUES (?,?,?)", (s["id"], today_str(), amt))
         db.commit()
     else:
         flash("Vault Locked: Insufficient usable funds.")
     return redirect("/dashboard")
 
+# ---------- EMERGENCY & SECURITY ROUTES ----------
 @app.route("/emergency_release", methods=["POST"])
 def emergency_release():
     pin = request.form["pin"]
-    cursor.execute("SELECT parent_pin, emergency_fund FROM students WHERE id=?", (session['student_id'],))
-    res = cursor.fetchone()
-    if pin == res["parent_pin"]:
-        cursor.execute("UPDATE students SET usable_balance = usable_balance + emergency_fund, emergency_fund = 0 WHERE id=?", (session['student_id'],))
+    s = get_student(session['student_id'])
+    if pin == s["parent_pin"]:
+        cursor.execute("UPDATE students SET usable_balance = usable_balance + emergency_fund, emergency_fund = 0 WHERE id=?", (s["id"],))
         db.commit()
         flash("Emergency funds released!")
     else:
         flash("Wrong PIN.")
     return redirect("/dashboard")
 
+@app.route("/add_emergency", methods=["POST"])
+def add_emergency():
+    amt = float(request.form["amount"])
+    s = get_student(session['student_id'])
+    if amt <= s["usable_balance"]:
+        cursor.execute("UPDATE students SET usable_balance = usable_balance - ?, emergency_fund = ? WHERE id=?", (amt, amt, s["id"]))
+        db.commit()
+        flash("New Emergency Buffer set.")
+    else:
+        flash("Insufficient funds to set buffer.")
+    return redirect("/dashboard")
+
+@app.route("/request_pin_reset", methods=["POST"])
+def request_pin_reset():
+    s = get_student(session['student_id'])
+    token = secrets.token_hex(16)
+    cursor.execute("UPDATE students SET reset_token=? WHERE id=?", (token, s['id']))
+    db.commit()
+    
+    # 2-Step Verification: Send Token to Email
+    try:
+        msg = Message("Comrade Plan: PIN Reset Token", sender=app.config['MAIL_USERNAME'], recipients=[s['email']])
+        msg.body = f"Hello {s['name']}, your secure token to reset your Emergency PIN is: {token}"
+        mail.send(msg)
+        flash("Reset token sent to your email!")
+    except:
+        flash("Email service error. Check server logs.")
+    return redirect("/dashboard")
+
+@app.route("/verify_pin_reset", methods=["POST"])
+def verify_pin_reset():
+    token_in = request.form.get("token")
+    new_pin = request.form.get("new_pin")
+    s = get_student(session['student_id'])
+    if token_in == s["reset_token"] and s["reset_token"] is not None:
+        cursor.execute("UPDATE students SET parent_pin=?, reset_token=NULL WHERE id=?", (new_pin, s['id']))
+        db.commit()
+        flash("PIN reset successful!")
+    else:
+        flash("Invalid token.")
+    return redirect("/dashboard")
+
+# ---------- SOCIAL & DANGER ZONE ----------
+@app.route("/leaderboard")
+def leaderboard():
+    cursor.execute("SELECT name, streak FROM students ORDER BY streak DESC LIMIT 10")
+    top_comrades = cursor.fetchall()
+    return render_template("leaderboard.html", top_comrades=top_comrades)
+
+@app.route("/reset_plan", methods=["POST"])
+def reset_plan():
+    cursor.execute("""
+        UPDATE students SET usable_balance=0, sealed_balance=0, emergency_fund=0, 
+        daily_rate=0, days_in_plan=0, streak=0, last_day=? WHERE id=?
+    """, (today_str(), session['student_id']))
+    db.commit()
+    flash("Plan Reset. Start a new mission.")
+    return redirect("/dashboard")
+
 @app.route("/logout")
 def logout():
     session.clear()
     return redirect("/")
-@app.route("/leaderboard")
-def leaderboard():
-    if 'student_id' not in session: return redirect("/")
-    
-    # Fetch the top 10 students based on their current streak
-    cursor.execute("""
-        SELECT name, streak 
-        FROM students 
-        ORDER BY streak DESC 
-        LIMIT 10
-    """)
-    top_comrades = cursor.fetchall()
-    
-    return render_template("leaderboard.html", top_comrades=top_comrades)
+
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=10000)
+    app.run(host="0.0.0.0", port=10000, debug=True)

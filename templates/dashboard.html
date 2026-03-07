@@ -1,8 +1,10 @@
 <!DOCTYPE html>
-<html>
+<html lang="en">
 
 <head>
-    <title>Dashboard</title>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Comrade Dashboard</title>
     <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
 </head>
 
@@ -13,13 +15,23 @@
             <p>Status: <span class="badge">{{badge}}</span> | Streak: {{data.streak}} Days</p>
         </header>
 
+        {% with messages = get_flashed_messages() %}
+        {% if messages %}
+        <div class="warning" style="margin-bottom: 20px; text-align: center;">
+            {{ messages[0] }}
+        </div>
+        {% endif %}
+        {% endwith %}
+
         <div class="dashboard">
             <div class="card highlight">
                 <h3>Usable Cash Today</h3>
                 <h2 class="money">KES {{data.usable}}</h2>
-                <div class="progress-bar">
-                    <div class="progress-fill"
-                        style="width: {{ (data.spent_today / data.daily_limit * 100) if data.daily_limit > 0 else 0 }}%;">
+                <div class="progress-container">
+                    <div class="progress-bar">
+                        <div class="progress-fill"
+                            style="width: {{ (data.spent_today / data.daily_limit * 100) if data.daily_limit > 0 else 0 }}%;">
+                        </div>
                     </div>
                 </div>
                 <small>Spent: KES {{data.spent_today}} / Limit: KES {{data.daily_limit}}</small>
@@ -32,20 +44,22 @@
             </div>
 
             <div class="card emergency">
-                <h3>Emergency Fund</h3>
+                <h3>Emergency Buffer</h3>
+                {% if data.emergency > 0 %}
+                <p>Status: <strong>LOCKED</strong></p>
                 <h2>KES {{data.emergency}}</h2>
                 <form action="/emergency_release" method="POST">
-                    <input type="password" name="pin" placeholder="PIN" style="width:50%; margin:0">
-                    <button type="submit" class="btn-danger" style="width:40%; padding:5px">Unlock</button>
+                    <input type="password" name="pin" placeholder="Enter PIN" required style="width:50%; margin:0">
+                    <button type="submit" class="btn-danger" style="width:40%; padding:10px">Unlock</button>
                 </form>
-            </div>
-            <div class="card emergency">
-                <h3>Emergency Fund</h3>
-                <h2>KES {{data.emergency}}</h2>
-                <form action="/emergency_release" method="POST">
-                    <input type="password" name="pin" placeholder="PIN" style="width:50%; margin:0">
-                    <button type="submit" class="btn-danger" style="width:40%; padding:5px">Unlock</button>
+                {% else %}
+                <p>Status: <strong>EMPTY</strong></p>
+                <p style="font-size: 0.8rem;">Used your buffer. Save more?</p>
+                <form action="/add_emergency" method="POST">
+                    <input type="number" name="amount" placeholder="Amount to Lock" required>
+                    <button type="submit" style="background: var(--accent-blue);">Add New Buffer</button>
                 </form>
+                {% endif %}
             </div>
 
             <div class="card">
@@ -54,8 +68,7 @@
                 <p>Streak: <span class="badge">{{badge}} ({{data.streak}} days)</span></p>
 
                 <div style="margin-top: 15px; display: flex; flex-direction: column; gap: 10px;">
-                    <a href="https://api.whatsapp.com/send?text= " Niko na streak ya {{data.streak}} days bila ku-break
-                        bank! 💰 Use Comrade Plan uache ku-survive on black tax: ["https://comrade-plan.onrender.com"]
+                    <a href="https://api.whatsapp.com/send?text=Niko%20na%20streak%20ya%20{{data.streak}}%20days%20bila%20ku-break%20bank!%20%F0%9F%92%B0%20Use%20Comrade%20Plan%20uache%20ku-survive%20on%20black%20tax%3A%20https%3A%2F%2Fcomrade-plan.onrender.com"
                         target="_blank"
                         style="background: #25D366; color: white; padding: 10px; border-radius: 8px; text-decoration: none; text-align: center; font-size: 0.85rem; font-weight: bold;">
                         Share Streak on WhatsApp 📱
@@ -67,24 +80,32 @@
                     </a>
                 </div>
             </div>
-            <div class="card full">
-                <h3>Log Spending</h3>
-                <form action="/spend" method="POST">
-                    <input type="number" name="amount" step="0.01" required>
-                    <button type="submit">Spend</button>
-                </form>
-            </div>
 
             <div class="card full">
                 <h3>Log Spending</h3>
                 <form action="/spend" method="POST">
-                    <input type="number" name="amount" step="0.01" required>
+                    <input type="number" name="amount" step="0.01" placeholder="Enter amount" required>
                     <button type="submit">Spend</button>
                 </form>
             </div>
+
+            <div class="card full" style="border-top: 4px solid var(--accent-red); margin-top: 20px;">
+                <h3>Danger Zone</h3>
+                <p style="font-size: 0.8rem; color: var(--text-muted);">Completely broken your budget? Start a fresh
+                    plan here.</p>
+                <form action="/reset_plan" method="POST"
+                    onsubmit="return confirm('Comrade, are you sure? This wipes your streak and balances!');">
+                    <button type="submit"
+                        style="background: transparent; color: var(--accent-red); border: 1px solid var(--accent-red); padding: 10px; border-radius: 8px; cursor: pointer; width: 100%;">Reset
+                        Entire Plan</button>
+                </form>
+            </div>
         </div>
+
         <br>
-        <a href="/logout">Logout</a>
+        <div style="text-align: center;">
+            <a href="/logout" style="color: var(--text-muted); text-decoration: none;">Logout</a>
+        </div>
     </div>
 </body>
 
