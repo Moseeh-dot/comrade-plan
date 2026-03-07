@@ -52,6 +52,24 @@
                     <input type="password" name="pin" placeholder="Enter PIN" required style="width:50%; margin:0">
                     <button type="submit" class="btn-danger" style="width:40%; padding:10px">Unlock</button>
                 </form>
+
+                <hr style="border: 0.5px solid #334155; margin: 15px 0;">
+                <p style="font-size: 0.7rem; color: var(--text-muted);">Forgot PIN?</p>
+                <form action="/request_pin_reset" method="POST">
+                    <button type="submit"
+                        style="background: transparent; font-size: 11px; color: var(--accent-blue); border: 1px solid var(--accent-blue); padding: 5px; cursor: pointer;">
+                        Request Email Token
+                    </button>
+                </form>
+
+                <form action="/verify_pin_reset" method="POST" style="margin-top: 10px;">
+                    <input type="text" name="token" placeholder="Paste Token from Email" required
+                        style="font-size: 12px; padding: 8px;">
+                    <input type="password" name="new_pin" placeholder="New 4-Digit PIN" required
+                        style="font-size: 12px; padding: 8px;">
+                    <button type="submit" style="font-size: 11px; background: var(--accent-green);">Set New PIN</button>
+                </form>
+
                 {% else %}
                 <p>Status: <strong>EMPTY</strong></p>
                 <p style="font-size: 0.8rem;">Used your buffer. Save more?</p>
@@ -88,6 +106,7 @@
                     <button type="submit">Spend</button>
                 </form>
             </div>
+
             <div class="card full">
                 <h3>Recent Spending History</h3>
                 <div style="overflow-x: auto;">
@@ -120,6 +139,7 @@
                     </table>
                 </div>
             </div>
+
             <div class="card full" style="border-top: 4px solid var(--accent-red); margin-top: 20px;">
                 <h3>Danger Zone</h3>
                 <p style="font-size: 0.8rem; color: var(--text-muted);">Completely broken your budget? Start a fresh
@@ -131,6 +151,7 @@
                         Entire Plan</button>
                 </form>
             </div>
+
             <div class="card full highlight" style="margin-top: 20px; border-top: 4px solid var(--accent-blue);">
                 <h3>Start New Plan / Top-up</h3>
                 <p style="font-size: 0.8rem; color: var(--text-muted);">Ready for the next month? Enter your allowance

@@ -10,7 +10,6 @@ app = Flask(__name__)
 app.secret_key = os.environ.get("SECRET_KEY", "comrade_discipline_2026")
 
 # ---------- MAIL CONFIGURATION ----------
-# Replace these with your actual SMTP details (e.g., Gmail App Password)
 app.config['MAIL_SERVER'] = 'smtp.gmail.com'
 app.config['MAIL_PORT'] = 587
 app.config['MAIL_USE_TLS'] = True
@@ -27,7 +26,6 @@ def get_db():
 db = get_db()
 cursor = db.cursor()
 
-# Unified Schema for all features: Vault, Emergency, Streaks, and Security
 cursor.execute("""
 CREATE TABLE IF NOT EXISTS students (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -83,7 +81,6 @@ def register():
             flash("Invalid input values.")
             return redirect("/register")
 
-        # ACCOUNTING LOGIC: Initial Allocation
         emergency = round(total_money * buffer_pct, 2)
         daily_rate = round((total_money - emergency) / days, 2)
         sealed = round(total_money - emergency - daily_rate, 2)
@@ -113,7 +110,7 @@ def login():
     flash("Invalid credentials.")
     return redirect("/")
 
-# ---------- DASHBOARD & CORE LOGIC ----------
+# ---------- DASHBOARD (COMBINED & CORRECTED) ----------
 @app.route("/dashboard")
 def dashboard():
     student_id = session.get("student_id")
@@ -121,7 +118,7 @@ def dashboard():
     
     s = get_student(student_id)
     
-    # DAILY RELEASE LOGIC: Unseal daily allowance on a new day
+    # 1. Daily Release Logic
     if s["last_day"] != today_str():
         release = min(s["daily_rate"], s["sealed_balance"])
         cursor.execute("""
@@ -135,9 +132,20 @@ def dashboard():
         db.commit()
         s = get_student(student_id)
 
+    # 2. Daily Spending Calculation
     cursor.execute("SELECT SUM(amount) as total FROM spending WHERE student_id=? AND date=?", (student_id, today_str()))
     spent_today = cursor.fetchone()["total"] or 0.0
     
+    # 3. Spending History (Last 10 transactions)
+    cursor.execute("""
+        SELECT date, amount 
+        FROM spending 
+        WHERE student_id = ? 
+        ORDER BY id DESC 
+        LIMIT 10
+    """, (student_id,))
+    history = cursor.fetchall()
+
     badge = "Iron Discipline" if s["streak"] >= 10 else "Comrade Survivor" if s["streak"] >= 5 else "Budget Rookie"
     
     data = {
@@ -149,8 +157,9 @@ def dashboard():
         "days_left": s["days_in_plan"],
         "streak": s["streak"]
     }
-    return render_template("dashboard.html", data=data, badge=badge)
+    return render_template("dashboard.html", data=data, badge=badge, history=history)
 
+# ---------- CORE ACTIONS ----------
 @app.route("/spend", methods=["POST"])
 def spend():
     amt = float(request.form["amount"])
@@ -163,7 +172,35 @@ def spend():
         flash("Vault Locked: Insufficient usable funds.")
     return redirect("/dashboard")
 
-# ---------- EMERGENCY & SECURITY ROUTES ----------
+@app.route("/topup", methods=["POST"])
+def topup():
+    student_id = session.get("student_id")
+    try:
+        new_money = float(request.form.get("money"))
+        new_days = int(request.form.get("days"))
+        buffer_pct = float(request.form.get("buffer_percent", 10)) / 100
+        if new_money <= 0 or new_days <= 0:
+            flash("Amount and days must be positive.")
+            return redirect("/dashboard")
+    except:
+        flash("Invalid input values.")
+        return redirect("/dashboard")
+
+    emergency = round(new_money * buffer_pct, 2)
+    daily_rate = round((new_money - emergency) / new_days, 2)
+    sealed = round(new_money - emergency - daily_rate, 2)
+    
+    cursor.execute("""
+        UPDATE students SET 
+        usable_balance = ?, sealed_balance = ?, emergency_fund = ?, 
+        daily_rate = ?, days_in_plan = ?, last_day = ?
+        WHERE id = ?
+    """, (daily_rate, sealed, emergency, daily_rate, new_days, today_str(), student_id))
+    db.commit()
+    flash(f"Top-up successful! New daily limit: KES {daily_rate}")
+    return redirect("/dashboard")
+
+# ---------- EMERGENCY & SECURITY ----------
 @app.route("/emergency_release", methods=["POST"])
 def emergency_release():
     pin = request.form["pin"]
@@ -194,8 +231,6 @@ def request_pin_reset():
     token = secrets.token_hex(16)
     cursor.execute("UPDATE students SET reset_token=? WHERE id=?", (token, s['id']))
     db.commit()
-    
-    # 2-Step Verification: Send Token to Email
     try:
         msg = Message("Comrade Plan: PIN Reset Token", sender=app.config['MAIL_USERNAME'], recipients=[s['email']])
         msg.body = f"Hello {s['name']}, your secure token to reset your Emergency PIN is: {token}"
@@ -240,62 +275,5 @@ def logout():
     session.clear()
     return redirect("/")
 
-@app.route("/topup", methods=["POST"])
-def topup():
-    student_id = session.get("student_id")
-    try:
-        new_money = float(request.form.get("money"))
-        new_days = int(request.form.get("days"))
-        buffer_pct = float(request.form.get("buffer_percent", 10)) / 100
-        
-        if new_money <= 0 or new_days <= 0:
-            flash("Amount and days must be positive.")
-            return redirect("/dashboard")
-    except:
-        flash("Invalid input values.")
-        return redirect("/dashboard")
-
-    # Recalculate everything for the new period
-    emergency = round(new_money * buffer_pct, 2)
-    daily_rate = round((new_money - emergency) / new_days, 2)
-    sealed = round(new_money - emergency - daily_rate, 2)
-    
-    cursor.execute("""
-        UPDATE students SET 
-        usable_balance = ?, 
-        sealed_balance = ?, 
-        emergency_fund = ?, 
-        daily_rate = ?, 
-        days_in_plan = ?,
-        last_day = ?
-        WHERE id = ?
-    """, (daily_rate, sealed, emergency, daily_rate, new_days, today_str(), student_id))
-    db.commit()
-    
-    flash(f"Top-up successful! New daily limit: KES {daily_rate}")
-    return redirect("/dashboard")
-
-@app.route("/dashboard")
-def dashboard():
-    student_id = session.get("student_id")
-    if not student_id: return redirect("/")
-    
-    s = get_student(student_id)
-    
-    # ... (Keep your existing Daily Release and Streak logic here) ...
-
-    # NEW: Fetch recent spending history (Last 10 transactions)
-    cursor.execute("""
-        SELECT date, amount 
-        FROM spending 
-        WHERE student_id = ? 
-        ORDER BY id DESC 
-        LIMIT 10
-    """, (student_id,))
-    history = cursor.fetchall()
-
-    # ... (Keep your existing 'data' dictionary and badge logic) ...
-
-    return render_template("dashboard.html", data=data, badge=badge, history=history)
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=10000, debug=True)
