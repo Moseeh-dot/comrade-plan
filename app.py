@@ -114,11 +114,18 @@ def login():
 @app.route("/dashboard")
 def dashboard():
     student_id = session.get("student_id")
-    if not student_id: return redirect("/")
+    if not student_id: 
+        return redirect("/")
     
     s = get_student(student_id)
     
-    # 1. Daily Release Logic
+    # SAFETY CHECK: If the user was deleted or database was reset
+    if s is None:
+        session.clear()
+        flash("User not found. Please login again.")
+        return redirect("/")
+    
+    # 1. Daily Release Logic (Now safe because 's' is verified)
     if s["last_day"] != today_str():
         release = min(s["daily_rate"], s["sealed_balance"])
         cursor.execute("""
@@ -130,13 +137,13 @@ def dashboard():
             last_day = ? WHERE id = ?
         """, (release, release, today_str(), student_id))
         db.commit()
-        s = get_student(student_id)
+        s = get_student(student_id) # Refresh 's' after update
 
     # 2. Daily Spending Calculation
     cursor.execute("SELECT SUM(amount) as total FROM spending WHERE student_id=? AND date=?", (student_id, today_str()))
     spent_today = cursor.fetchone()["total"] or 0.0
     
-    # 3. Spending History (Last 10 transactions)
+    # 3. Spending History
     cursor.execute("""
         SELECT date, amount 
         FROM spending 
@@ -146,7 +153,7 @@ def dashboard():
     """, (student_id,))
     history = cursor.fetchall()
 
-    badge = "Iron Discipline" if s["streak"] >= 10 else "Comrade Survivor" if s["streak"] >= 5 else "Budget Rookie"
+    badge = "Iron Discipline" if (s["streak"] or 0) >= 10 else "Comrade Survivor" if (s["streak"] or 0) >= 5 else "Budget Rookie"
     
     data = {
         "usable": round(s["usable_balance"], 2),
@@ -154,8 +161,8 @@ def dashboard():
         "emergency": round(s["emergency_fund"], 2),
         "daily_limit": round(s["daily_rate"], 2),
         "spent_today": round(spent_today, 2),
-        "days_left": s["days_in_plan"],
-        "streak": s["streak"]
+        "days_left": s["days_in_plan"] or 0,
+        "streak": s["streak"] or 0
     }
     return render_template("dashboard.html", data=data, badge=badge, history=history)
 
@@ -275,5 +282,18 @@ def logout():
     session.clear()
     return redirect("/")
 
+@app.before_request
+def session_guard():
+    # We only care about checking logged-in users
+    student_id = session.get("student_id")
+    
+    if student_id:
+        # Check if this ID actually exists in our current budget.db
+        cursor.execute("SELECT id FROM students WHERE id = ?", (student_id,))
+        if cursor.fetchone() is None:
+            # If the database was reset, this ID will be missing.
+            # We clear the session to prevent the 'NoneType' crash.
+            session.clear()
+            flash("System synchronized. Please log in again.")
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=10000, debug=True)
