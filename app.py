@@ -25,6 +25,20 @@ CREATE TABLE IF NOT EXISTS students (
     last_day TEXT
 )
 """)
+# Add forgot password columns if they don't exist
+try:
+    cursor.execute("ALTER TABLE students ADD COLUMN reset_token TEXT")
+except sqlite3.OperationalError:
+    # Column already exists, ignore
+    pass
+
+try:
+    cursor.execute("ALTER TABLE students ADD COLUMN token_expiry TEXT")
+except sqlite3.OperationalError:
+    # Column already exists, ignore
+    pass
+
+conn.commit()
 
 cursor.execute("""
 CREATE TABLE IF NOT EXISTS spending (
@@ -266,6 +280,29 @@ def topup():
 def logout():
     session.clear()
     return redirect("/")
+@app.route("/forgot", methods=["GET","POST"])
+def forgot():
+    if request.method == "POST":
+        email = request.form["email"]
 
+        cursor.execute("SELECT id FROM students WHERE email=?", (email,))
+        user = cursor.fetchone()
+
+        if user:
+            import secrets
+            token = secrets.token_hex(16)
+
+            cursor.execute(
+                "UPDATE students SET reset_token=? WHERE email=?",
+                (token,email)
+            )
+            conn.commit()
+
+            flash(f"Reset link: /reset/{token}")
+
+        else:
+            flash("Email not found")
+
+    return render_template("forgot.html")
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=10000)
