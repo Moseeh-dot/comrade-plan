@@ -1,60 +1,90 @@
 <!DOCTYPE html>
-<html lang="en">
+<html>
 
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Comrade Plan Dashboard</title>
+    <title>Dashboard</title>
     <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
 </head>
 
 <body>
     <div class="container">
         <header>
-            <h1>Habari, {{ s['name'] }}!</h1>
-            <p class="status">Day {{ s['days_remaining'] }} of your plan | <span>Streak: {{ s['streak'] }} days</span>
-            </p>
+            <h1>Comrade Dashboard</h1>
+            <p>Status: <span class="badge">{{badge}}</span> | Streak: {{data.streak}} Days</p>
         </header>
 
-        <div class="dashboard-grid">
+        <div class="dashboard">
             <div class="card highlight">
-                <h3>Usable Today</h3>
-                <h2 class="money">KES {{ s['usable_balance'] }}</h2>
+                <h3>Usable Cash Today</h3>
+                <h2 class="money">KES {{data.usable}}</h2>
                 <div class="progress-bar">
-                    <div class="progress-fill" style="width: {{ progress }}%"></div>
+                    <div class="progress-fill"
+                        style="width: {{ (data.spent_today / data.daily_limit * 100) if data.daily_limit > 0 else 0 }}%;">
+                    </div>
                 </div>
-                <p>Daily Rate: KES {{ s['daily_rate'] }}</p>
+                <small>Spent: KES {{data.spent_today}} / Limit: KES {{data.daily_limit}}</small>
             </div>
 
             <div class="card vault">
-                <h3>The Vault (Sealed)</h3>
-                <p>Locked away for future days</p>
-                <h2 class="money-muted">KES {{ s['sealed_balance'] }}</h2>
+                <h3>Sealed Balance</h3>
+                <p>Days Remaining: {{data.days_left}}</p>
+                <h2 class="money-muted">KES {{data.sealed}}</h2>
             </div>
 
             <div class="card emergency">
-                <h3>Emergency Buffer (10%)</h3>
-                <p>Untouchable Savings</p>
-                <h2>KES {{ s['emergency_fund'] }}</h2>
+                <h3>Emergency Fund</h3>
+                <h2>KES {{data.emergency}}</h2>
+                <form action="/emergency_release" method="POST">
+                    <input type="password" name="pin" placeholder="PIN" style="width:50%; margin:0">
+                    <button type="submit" class="btn-danger" style="width:40%; padding:5px">Unlock</button>
+                </form>
+            </div>
+            <div class="card emergency">
+                <h3>Emergency Fund</h3>
+                <h2>KES {{data.emergency}}</h2>
+                <form action="/emergency_release" method="POST">
+                    <input type="password" name="pin" placeholder="PIN" style="width:50%; margin:0">
+                    <button type="submit" class="btn-danger" style="width:40%; padding:5px">Unlock</button>
+                </form>
             </div>
 
-            <div class="card action-card">
-                <h3>Record Spending</h3>
+            <div class="card">
+                <h3>Plan Stats</h3>
+                <p>Days Left: <strong>{{data.days_left}}</strong></p>
+                <p>Streak: <span class="badge">{{badge}} ({{data.streak}} days)</span></p>
+
+                <div style="margin-top: 15px; display: flex; flex-direction: column; gap: 10px;">
+                    <a href="https://api.whatsapp.com/send?text= " Niko na streak ya {{data.streak}} days bila ku-break
+                        bank! 💰 Use Comrade Plan uache ku-survive on black tax: ["https://your-app-link.render.com"]
+                        target="_blank"
+                        style="background: #25D366; color: white; padding: 10px; border-radius: 8px; text-decoration: none; text-align: center; font-size: 0.85rem; font-weight: bold;">
+                        Share Streak on WhatsApp 📱
+                    </a>
+
+                    <a href="/leaderboard"
+                        style="color: var(--accent-blue); font-size: 0.8rem; text-decoration: none; text-align: center;">
+                        View Campus Leaderboard 🏆
+                    </a>
+                </div>
+            </div>
+            <div class="card full">
+                <h3>Log Spending</h3>
                 <form action="/spend" method="POST">
-                    <input type="number" name="amount" step="0.01" placeholder="Amount (KES)" required>
-                    <button type="submit" class="btn-spend">Log Expense</button>
+                    <input type="number" name="amount" step="0.01" required>
+                    <button type="submit">Spend</button>
                 </form>
-                {% with messages = get_flashed_messages() %}
-                {% if messages %}
-                <p class="warning">{{ messages[0] }}</p>
-                {% endif %}
-                {% endwith %}
+            </div>
+
+            <div class="card full">
+                <h3>Log Spending</h3>
+                <form action="/spend" method="POST">
+                    <input type="number" name="amount" step="0.01" required>
+                    <button type="submit">Spend</button>
+                </form>
             </div>
         </div>
-
-        <footer>
-            <a href="/logout" class="logout-link">End Session</a>
-        </footer>
+        <br>
+        <a href="/logout">Logout</a>
     </div>
 </body>
 

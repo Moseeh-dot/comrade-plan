@@ -1,0 +1,49 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <title>Comrade Leaderboard</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+
+<body>
+    <div class="container">
+        <header>
+            <h1 style="color: var(--accent-gold);">🏆 Discipline Leaderboard</h1>
+            <p>The longest streaks in the campus</p>
+        </header>
+
+        <div class="card full">
+            <table style="width: 100%; border-collapse: collapse;">
+                <thead>
+                    <tr style="border-bottom: 1px solid #334155; color: var(--text-muted);">
+                        <th style="text-align: left; padding: 12px;">Rank</th>
+                        <th style="text-align: left; padding: 12px;">Comrade</th>
+                        <th style="text-align: right; padding: 12px;">Streak</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for comrade in top_comrades %}
+                    <tr style="border-bottom: 1px solid rgba(255,255,255,0.05);">
+                        <td style="padding: 15px;">
+                            {% if loop.index == 1 %}🥇{% elif loop.index == 2 %}🥈{% elif loop.index == 3 %}🥉{% else
+                            %}{{ loop.index }}{% endif %}
+                        </td>
+                        <td style="padding: 15px; font-weight: 600;">{{ comrade.name }}</td>
+                        <td style="padding: 15px; text-align: right;">
+                            <span class="badge">{{ comrade.streak }} Days</span>
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+
+        <div style="text-align: center; margin-top: 30px;">
+            <a href="/dashboard" style="color: var(--accent-blue); text-decoration: none;">&larr; Back to my Vault</a>
+        </div>
+    </div>
+</body>
+
+</html>

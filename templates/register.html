@@ -1,23 +1,52 @@
 <!DOCTYPE html>
 <html>
-<link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
 
 <head>
-    <title>Register</title>
-
+    <title>Comrade Register</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
 </head>
 
 <body>
-    <h1>Register</h1>
-    <form action="/register" method="post">
-        <input type="text" name="name" placeholder="Your Name" required><br>
-        <input type="email" name="email" placeholder="Email" required><br>
-        <input type="password" name="password" placeholder="Password" required><br>
-        <input type="number" name="money" placeholder="Amount received" required><br>
-        <input type="number" name="days" placeholder="Days until next allowance" required><br>
-        <button>Register</button>
-    </form>
-    <p>Already have an account? <a href="/">Login Here</a></p>
+    <div class="container">
+        <div class="form-card">
+            <h1>Join Comrade Plan</h1>
+            <form action="/register" method="POST">
+                <input type="text" name="name" placeholder="Full Name" required>
+                <input type="email" name="email" placeholder="Campus Email" required>
+                <input type="password" name="password" placeholder="Password" required>
+                <input type="number" name="money" placeholder="Total Allowance (KES)" required>
+                <input type="number" name="days" placeholder="Days to Survive" required>
+
+                <label>Emergency Buffer (%):</label>
+                <input type="number" id="bufferInput" name="buffer_percent" value="10" required>
+
+                <div class="tiered-buttons">
+                    <button type="button" class="btn-sm" onclick="setBuffer(5)">Survivor (5%)</button>
+                    <button type="button" class="btn-sm" onclick="setBuffer(10)">Comrade (10%)</button>
+                    <button type="button" class="btn-sm" onclick="setBuffer(20)">Minister (20%)</button>
+                </div>
+
+                <p id="bufferWarning" class="warning-text" style="display:none;">
+                    ⚠ Warning: Without a buffer, one 'sherehe' could leave you broke for a week. Are you sure?
+                </p>
+
+                <button type="submit">Start My Plan</button>
+            </form>
+            <p style="text-align:center">Already a member? <a href="/">Login</a></p>
+        </div>
+    </div>
+
+    <script>
+        function setBuffer(val) {
+            document.getElementById('bufferInput').value = val;
+            checkBuffer();
+        }
+        function checkBuffer() {
+            const val = document.getElementById('bufferInput').value;
+            document.getElementById('bufferWarning').style.display = (val <= 0) ? 'block' : 'none';
+        }
+        document.getElementById('bufferInput').oninput = checkBuffer;
+    </script>
 </body>
 
 </html>

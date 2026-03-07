@@ -1,118 +1,145 @@
+:root {
+    --primary-bg: #0f172a;
+    --card-bg: #1e293b;
+    --text-main: #f8fafc;
+    --accent-green: #10b981;
+    --accent-blue: #3b82f6;
+    --accent-gold: #f59e0b;
+}
+
 body {
-    font-family: Arial, sans-serif;
-    background: #f4f6f8;
+    font-family: 'Inter', sans-serif;
+    background: var(--primary-bg);
+    color: var(--text-main);
     margin: 0;
     padding: 0;
 }
 
-/* CENTER PAGE */
 .container {
-    max-width: 900px;
+    max-width: 800px;
     margin: auto;
     padding: 20px;
 }
 
-/* LOGIN & REGISTER CARDS */
-.form-card {
-    background: white;
-    padding: 25px;
-    border-radius: 12px;
-    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
-    max-width: 400px;
-    margin: auto;
-}
-
-/* DASHBOARD */
 .dashboard {
     display: grid;
     grid-template-columns: 1fr 1fr;
-    gap: 20px;
+    gap: 16px;
 }
 
-/* CARD STYLE */
 .card {
-    background: white;
-    padding: 20px;
-    border-radius: 12px;
-    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+    background: var(--card-bg);
+    padding: 24px;
+    border-radius: 16px;
+    border: 1px solid rgba(255, 255, 255, 0.1);
 }
 
-/* FULL WIDTH CARD */
 .full {
-    grid-column: 1 / span 2;
+    grid-column: 1 / -1;
 }
 
-/* INPUTS */
-input {
-    width: 100%;
-    padding: 10px;
-    margin-top: 10px;
-    margin-bottom: 15px;
-    border-radius: 6px;
-    border: 1px solid #ccc;
+.highlight {
+    border-top: 4px solid var(--accent-green);
 }
 
-/* BUTTONS */
-button {
-    width: 100%;
-    padding: 12px;
-    border: none;
-    border-radius: 6px;
-    background: #2196F3;
-    color: white;
-    font-size: 16px;
-    cursor: pointer;
+.vault {
+    border-top: 4px solid var(--accent-blue);
 }
 
-button:hover {
-    background: #1976D2;
+.emergency {
+    border-top: 4px solid var(--accent-gold);
 }
 
-/* TEXT */
-h1,
-h2,
-h3 {
-    margin-top: 0;
+.money {
+    font-size: 2rem;
+    font-weight: 800;
+    color: var(--accent-green);
+    margin: 10px 0;
 }
 
-.warning {
-    color: red;
-    font-weight: bold;
-}
-
-.badge {
-    color: #FF9800;
-    font-weight: bold;
-}
-
-/* MOBILE */
-@media(max-width:700px) {
-
-    .dashboard {
-        grid-template-columns: 1fr;
-    }
-
-    .full {
-        grid-column: 1;
-    }
-
+.money-muted {
+    font-size: 1.5rem;
+    color: var(--accent-blue);
 }
 
 .progress-container {
-    margin-top: 10px;
-}
-
-.progress-bar {
-    width: 100%;
-    height: 20px;
-    background: #ddd;
+    background: rgba(255, 255, 255, 0.1);
+    height: 10px;
     border-radius: 10px;
-    overflow: hidden;
+    margin: 10px 0;
 }
 
 .progress-fill {
     height: 100%;
-    background: #4CAF50;
-    width: 0%;
-    transition: width 0.5s ease;
+    background: var(--accent-green);
+    border-radius: 10px;
+    transition: width 0.5s;
+}
+
+.form-card {
+    background: var(--card-bg);
+    padding: 40px;
+    border-radius: 20px;
+    max-width: 400px;
+    margin: auto;
+}
+
+input {
+    background: #0f172a;
+    border: 1px solid #334155;
+    color: white;
+    width: 100%;
+    padding: 12px;
+    margin-bottom: 15px;
+    border-radius: 8px;
+    box-sizing: border-box;
+}
+
+button {
+    background: var(--accent-blue);
+    color: white;
+    border: none;
+    padding: 12px;
+    border-radius: 8px;
+    cursor: pointer;
+    width: 100%;
+    font-weight: bold;
+}
+
+.btn-sm {
+    font-size: 11px;
+    padding: 8px;
+    margin-top: 5px;
+}
+
+.tiered-buttons {
+    display: flex;
+    gap: 5px;
+    margin-bottom: 15px;
+}
+
+.warning-text {
+    color: var(--accent-gold);
+    font-size: 12px;
+    font-weight: bold;
+}
+
+.badge {
+    background: rgba(245, 158, 11, 0.2);
+    color: var(--accent-gold);
+    padding: 4px 10px;
+    border-radius: 20px;
+    font-size: 12px;
+}
+
+.btn-whatsapp:hover {
+    background: #128C7E;
+    /* Darker WhatsApp Green */
+    transform: scale(1.02);
+}
+
+@media (max-width: 600px) {
+    .dashboard {
+        grid-template-columns: 1fr;
+    }
 }
