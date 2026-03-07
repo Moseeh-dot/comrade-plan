@@ -304,5 +304,31 @@ def forgot():
             flash("Email not found")
 
     return render_template("forgot.html")
+@app.route("/reset/<token>", methods=["GET","POST"])
+def reset(token):
+
+    cursor.execute(
+        "SELECT id FROM students WHERE reset_token=?",
+        (token,)
+    )
+    user = cursor.fetchone()
+
+    if not user:
+        return "Invalid reset link"
+
+    if request.method == "POST":
+        password = request.form["password"]
+        hashed = generate_password_hash(password)
+
+        cursor.execute(
+            "UPDATE students SET password=?, reset_token=NULL WHERE reset_token=?",
+            (hashed, token)
+        )
+        conn.commit()
+
+        flash("Password updated. Please login.")
+        return redirect("/")
+
+    return render_template("reset.html")
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=10000)
