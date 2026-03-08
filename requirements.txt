@@ -1,5 +1,5 @@
-Flask
-gunicorn
-werkzeug
-Flask-mail
-psycopg2-binary
+Flask==3.0.0
+Flask-Mail==0.9.1
+psycopg2-binary==2.9.9
+Werkzeug==3.0.1
+gunicorn==21.2.0
