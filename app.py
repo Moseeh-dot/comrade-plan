@@ -1,159 +1,147 @@
-from flask import Flask, render_template, request, redirect, session, flash
+from flask import Flask, render_template, request, redirect, session, flash, url_for
 from flask_mail import Mail, Message
-import sqlite3
+import psycopg2
+from psycopg2.extras import RealDictCursor
 import secrets
 import os
 from datetime import date
 from werkzeug.security import generate_password_hash, check_password_hash
 
 app = Flask(__name__)
-app.secret_key = os.environ.get("SECRET_KEY", "comrade_discipline_2026")
+# Security: Prioritize Render Environment Variable for the secret key
+app.secret_key = os.environ.get("SECRET_KEY", "comrade_secure_key_2026")
 
-# ---------- MAIL CONFIGURATION ----------
-app.config['MAIL_SERVER'] = 'smtp.gmail.com'
-app.config['MAIL_PORT'] = 587
-app.config['MAIL_USE_TLS'] = True
-app.config['MAIL_USERNAME'] = os.environ.get("MAIL_USER") 
-app.config['MAIL_PASSWORD'] = os.environ.get("MAIL_PASS")
+# ---------- MAIL CONFIGURATION (Verification & PIN Reset) ----------
+app.config.update(
+    MAIL_SERVER='smtp.gmail.com',
+    MAIL_PORT=587,
+    MAIL_USE_TLS=True,
+    MAIL_USERNAME=os.environ.get("MAIL_USER"),
+    MAIL_PASSWORD=os.environ.get("MAIL_PASS")
+)
 mail = Mail(app)
 
-# ---------- DATABASE SETUP ----------
+# ---------- DATABASE CONNECTION (PostgreSQL) ----------
 def get_db():
-    conn = sqlite3.connect("budget.db", check_same_thread=False)
-    conn.row_factory = sqlite3.Row
+    # Use SSL mode 'require' as enforced by Render PostgreSQL
+    conn = psycopg2.connect(os.environ.get("DATABASE_URL"), sslmode='require')
     return conn
 
-db = get_db()
-cursor = db.cursor()
-
-cursor.execute("""
-CREATE TABLE IF NOT EXISTS students (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    name TEXT,
-    email TEXT UNIQUE,
-    password TEXT,
-    usable_balance REAL DEFAULT 0,
-    sealed_balance REAL DEFAULT 0,
-    emergency_fund REAL DEFAULT 0,
-    daily_rate REAL DEFAULT 0,
-    days_in_plan INTEGER,
-    streak INTEGER DEFAULT 0,
-    last_day TEXT,
-    parent_pin TEXT DEFAULT '1234',
-    reset_token TEXT
-)
-""")
-cursor.execute("""
-CREATE TABLE IF NOT EXISTS spending (
-    id INTEGER PRIMARY KEY AUTOINCREMENT, 
-    student_id INTEGER, 
-    date TEXT, 
-    amount REAL
-)
-""")
-db.commit()
-
-# ---------- HELPERS ----------
-def today_str():
-    return date.today().isoformat()
-
-def get_student(student_id):
-    cursor.execute("SELECT * FROM students WHERE id=?", (student_id,))
-    return cursor.fetchone()
-
-# ---------- AUTH ROUTES ----------
-@app.route("/")
-def index():
-    if 'student_id' in session: return redirect("/dashboard")
-    return render_template("index.html")
-
+# ---------- AUTHENTICATION & REGISTRATION ----------
 @app.route("/register", methods=["GET", "POST"])
 def register():
     if request.method == "POST":
         name = request.form["name"].strip()
         email = request.form["email"].strip().lower()
-        password = request.form["password"]
+        password = generate_password_hash(request.form["password"])
+        # Fix: User now sets their own unique Emergency PIN at signup
+        pin = request.form["pin"] 
+        token = secrets.token_hex(16)
+        
         try:
             total_money = float(request.form["money"])
             days = int(request.form["days"])
             buffer_pct = float(request.form.get("buffer_percent", 10)) / 100
-        except:
-            flash("Invalid input values.")
+        except (ValueError, TypeError):
+            flash("Invalid financial data entered.")
             return redirect("/register")
 
+        # ACCOUNTING LOGIC: Strategic Capital Split
         emergency = round(total_money * buffer_pct, 2)
         daily_rate = round((total_money - emergency) / days, 2)
         sealed = round(total_money - emergency - daily_rate, 2)
-        
-        hashed = generate_password_hash(password)
+
+        conn = get_db()
+        cur = conn.cursor()
         try:
-            cursor.execute("""
-                INSERT INTO students (name, email, password, usable_balance, sealed_balance, emergency_fund, daily_rate, days_in_plan, streak, last_day)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?)
-            """, (name, email, hashed, daily_rate, sealed, emergency, daily_rate, days, today_str()))
-            db.commit()
-            session['student_id'] = cursor.lastrowid
-            return redirect("/dashboard")
-        except sqlite3.IntegrityError:
-            flash("Email already exists.")
+            cur.execute("""
+                INSERT INTO students (name, email, password, parent_pin, usable_balance, 
+                sealed_balance, emergency_fund, daily_rate, days_in_plan, last_day, verification_token)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            """, (name, email, password, pin, daily_rate, sealed, emergency, daily_rate, days, date.today().isoformat(), token))
+            conn.commit()
+            
+            # Send Verification Email
+            verify_url = url_for('verify_email', token=token, _external=True)
+            msg = Message("Verify Your Comrade Plan Account", 
+                          sender=app.config['MAIL_USERNAME'], 
+                          recipients=[email])
+            msg.body = f"Habari {name}! Click the link to verify your account and start your plan: {verify_url}"
+            mail.send(msg)
+            
+            flash("Registration successful! Check your email to verify your account.")
+            return redirect("/")
+        except Exception as e:
+            flash("Registration failed. Email may already be in use.")
+        finally:
+            cur.close()
+            conn.close()
     return render_template("register.html")
+
+@app.route("/verify/<token>")
+def verify_email(token):
+    conn = get_db()
+    cur = conn.cursor()
+    cur.execute("UPDATE students SET is_verified=TRUE, verification_token=NULL WHERE verification_token=%s", (token,))
+    conn.commit()
+    if cur.rowcount > 0:
+        flash("Email verified successfully! You can now login.")
+    else:
+        flash("Verification link is invalid or expired.")
+    cur.close()
+    conn.close()
+    return redirect("/")
 
 @app.route("/login", methods=["POST"])
 def login():
     email = request.form["email"].strip().lower()
     password = request.form["password"]
-    cursor.execute("SELECT id, password FROM students WHERE email=?", (email,))
-    row = cursor.fetchone()
-    if row and check_password_hash(row["password"], password):
-        session['student_id'] = row["id"]
+    
+    conn = get_db()
+    cur = conn.cursor(cursor_factory=RealDictCursor)
+    cur.execute("SELECT * FROM students WHERE email=%s", (email,))
+    user = cur.fetchone()
+    cur.close()
+    conn.close()
+
+    if user and check_password_hash(user["password"], password):
+        if not user['is_verified']:
+            flash("Account not verified. Please check your email.")
+            return redirect("/")
+        session['student_id'] = user["id"]
         return redirect("/dashboard")
-    flash("Invalid credentials.")
+    
+    flash("Invalid email or password.")
     return redirect("/")
 
-# ---------- DASHBOARD (COMBINED & CORRECTED) ----------
+# ---------- DASHBOARD CORE ----------
 @app.route("/dashboard")
 def dashboard():
-    student_id = session.get("student_id")
-    if not student_id: 
-        return redirect("/")
+    if 'student_id' not in session: return redirect("/")
     
-    s = get_student(student_id)
+    conn = get_db()
+    cur = conn.cursor(cursor_factory=RealDictCursor)
+    cur.execute("SELECT * FROM students WHERE id=%s", (session['student_id'],))
+    s = cur.fetchone()
     
-    # SAFETY CHECK: If the user was deleted or database was reset
-    if s is None:
-        session.clear()
-        flash("User not found. Please login again.")
-        return redirect("/")
-    
-    # 1. Daily Release Logic (Now safe because 's' is verified)
-    if s["last_day"] != today_str():
+    # Daily Auto-Release Logic
+    if s["last_day"] != date.today().isoformat():
         release = min(s["daily_rate"], s["sealed_balance"])
-        cursor.execute("""
+        cur.execute("""
             UPDATE students SET 
-            usable_balance = usable_balance + ?, 
-            sealed_balance = max(0, sealed_balance - ?),
-            days_in_plan = max(0, days_in_plan - 1),
+            usable_balance = usable_balance + %s, 
+            sealed_balance = GREATEST(0, sealed_balance - %s),
+            days_in_plan = GREATEST(0, days_in_plan - 1),
             streak = streak + 1,
-            last_day = ? WHERE id = ?
-        """, (release, release, today_str(), student_id))
-        db.commit()
-        s = get_student(student_id) # Refresh 's' after update
+            last_day = %s WHERE id = %s
+        """, (release, release, date.today().isoformat(), s['id']))
+        conn.commit()
+        # Refresh local data variable
+        cur.execute("SELECT * FROM students WHERE id=%s", (s['id'],))
+        s = cur.fetchone()
 
-    # 2. Daily Spending Calculation
-    cursor.execute("SELECT SUM(amount) as total FROM spending WHERE student_id=? AND date=?", (student_id, today_str()))
-    spent_today = cursor.fetchone()["total"] or 0.0
-    
-    # 3. Spending History
-    cursor.execute("""
-        SELECT date, amount 
-        FROM spending 
-        WHERE student_id = ? 
-        ORDER BY id DESC 
-        LIMIT 10
-    """, (student_id,))
-    history = cursor.fetchall()
-
-    badge = "Iron Discipline" if (s["streak"] or 0) >= 10 else "Comrade Survivor" if (s["streak"] or 0) >= 5 else "Budget Rookie"
+    cur.execute("SELECT SUM(amount) as total FROM spending WHERE student_id=%s AND date=%s", (s['id'], date.today().isoformat()))
+    spent_today = cur.fetchone()["total"] or 0.0
     
     data = {
         "usable": round(s["usable_balance"], 2),
@@ -161,120 +149,97 @@ def dashboard():
         "emergency": round(s["emergency_fund"], 2),
         "daily_limit": round(s["daily_rate"], 2),
         "spent_today": round(spent_today, 2),
-        "days_left": s["days_in_plan"] or 0,
-        "streak": s["streak"] or 0
+        "days_left": s["days_in_plan"],
+        "streak": s["streak"]
     }
-    return render_template("dashboard.html", data=data, badge=badge, history=history)
+    
+    badge = "Iron Discipline" if s["streak"] >= 10 else "Budget Rookie"
+    
+    cur.close()
+    conn.close()
+    return render_template("dashboard.html", data=data, badge=badge)
 
-# ---------- CORE ACTIONS ----------
+# ---------- FINANCIAL OPERATIONS ----------
 @app.route("/spend", methods=["POST"])
 def spend():
-    amt = float(request.form["amount"])
-    s = get_student(session['student_id'])
-    if amt <= s["usable_balance"]:
-        cursor.execute("UPDATE students SET usable_balance = usable_balance - ? WHERE id=?", (amt, s["id"]))
-        cursor.execute("INSERT INTO spending (student_id, date, amount) VALUES (?,?,?)", (s["id"], today_str(), amt))
-        db.commit()
+    try:
+        amt = float(request.form["amount"])
+        if amt <= 0: raise ValueError
+    except:
+        flash("Please enter a positive numeric amount.")
+        return redirect("/dashboard")
+
+    conn = get_db()
+    cur = conn.cursor(cursor_factory=RealDictCursor)
+    cur.execute("SELECT usable_balance FROM students WHERE id=%s", (session['student_id'],))
+    balance = cur.fetchone()["usable_balance"]
+
+    if amt <= balance:
+        cur.execute("UPDATE students SET usable_balance = usable_balance - %s WHERE id=%s", (amt, session['student_id']))
+        cur.execute("INSERT INTO spending (student_id, date, amount) VALUES (%s, %s, %s)", (session['student_id'], date.today().isoformat(), amt))
+        conn.commit()
     else:
-        flash("Vault Locked: Insufficient usable funds.")
+        flash("You have exceeded your usable balance for today!")
+    
+    cur.close()
+    conn.close()
+    return redirect("/dashboard")
+
+@app.route("/emergency_release", methods=["POST"])
+def emergency_release():
+    pin_attempt = request.form.get("pin")
+    conn = get_db()
+    cur = conn.cursor(cursor_factory=RealDictCursor)
+    cur.execute("SELECT parent_pin, emergency_fund FROM students WHERE id=%s", (session['student_id'],))
+    s = cur.fetchone()
+
+    if pin_attempt == s["parent_pin"]:
+        cur.execute("UPDATE students SET usable_balance = usable_balance + emergency_fund, emergency_fund = 0 WHERE id=%s", (session['student_id'],))
+        conn.commit()
+        flash("Emergency funds released to usable balance!")
+    else:
+        flash("Incorrect PIN. Access denied.")
+    
+    cur.close()
+    conn.close()
     return redirect("/dashboard")
 
 @app.route("/topup", methods=["POST"])
 def topup():
-    student_id = session.get("student_id")
+    """Logic to restart the plan cycle"""
     try:
-        new_money = float(request.form.get("money"))
-        new_days = int(request.form.get("days"))
+        money = float(request.form["money"])
+        days = int(request.form["days"])
         buffer_pct = float(request.form.get("buffer_percent", 10)) / 100
-        if new_money <= 0 or new_days <= 0:
-            flash("Amount and days must be positive.")
-            return redirect("/dashboard")
     except:
-        flash("Invalid input values.")
+        flash("Invalid values provided.")
         return redirect("/dashboard")
 
-    emergency = round(new_money * buffer_pct, 2)
-    daily_rate = round((new_money - emergency) / new_days, 2)
-    sealed = round(new_money - emergency - daily_rate, 2)
+    emergency = round(money * buffer_pct, 2)
+    daily = round((money - emergency) / days, 2)
+    sealed = round(money - emergency - daily, 2)
     
-    cursor.execute("""
-        UPDATE students SET 
-        usable_balance = ?, sealed_balance = ?, emergency_fund = ?, 
-        daily_rate = ?, days_in_plan = ?, last_day = ?
-        WHERE id = ?
-    """, (daily_rate, sealed, emergency, daily_rate, new_days, today_str(), student_id))
-    db.commit()
-    flash(f"Top-up successful! New daily limit: KES {daily_rate}")
+    conn = get_db()
+    cur = conn.cursor()
+    cur.execute("""
+        UPDATE students SET usable_balance=%s, sealed_balance=%s, emergency_fund=%s, 
+        daily_rate=%s, days_in_plan=%s, last_day=%s WHERE id=%s
+    """, (daily, sealed, emergency, daily, days, date.today().isoformat(), session['student_id']))
+    conn.commit()
+    cur.close()
+    conn.close()
+    flash("New Cycle Started!")
     return redirect("/dashboard")
-
-# ---------- EMERGENCY & SECURITY ----------
-@app.route("/emergency_release", methods=["POST"])
-def emergency_release():
-    pin = request.form["pin"]
-    s = get_student(session['student_id'])
-    if pin == s["parent_pin"]:
-        cursor.execute("UPDATE students SET usable_balance = usable_balance + emergency_fund, emergency_fund = 0 WHERE id=?", (s["id"],))
-        db.commit()
-        flash("Emergency funds released!")
-    else:
-        flash("Wrong PIN.")
-    return redirect("/dashboard")
-
-@app.route("/add_emergency", methods=["POST"])
-def add_emergency():
-    amt = float(request.form["amount"])
-    s = get_student(session['student_id'])
-    if amt <= s["usable_balance"]:
-        cursor.execute("UPDATE students SET usable_balance = usable_balance - ?, emergency_fund = ? WHERE id=?", (amt, amt, s["id"]))
-        db.commit()
-        flash("New Emergency Buffer set.")
-    else:
-        flash("Insufficient funds to set buffer.")
-    return redirect("/dashboard")
-
-@app.route("/request_pin_reset", methods=["POST"])
-def request_pin_reset():
-    s = get_student(session['student_id'])
-    token = secrets.token_hex(16)
-    cursor.execute("UPDATE students SET reset_token=? WHERE id=?", (token, s['id']))
-    db.commit()
-    try:
-        msg = Message("Comrade Plan: PIN Reset Token", sender=app.config['MAIL_USERNAME'], recipients=[s['email']])
-        msg.body = f"Hello {s['name']}, your secure token to reset your Emergency PIN is: {token}"
-        mail.send(msg)
-        flash("Reset token sent to your email!")
-    except:
-        flash("Email service error. Check server logs.")
-    return redirect("/dashboard")
-
-@app.route("/verify_pin_reset", methods=["POST"])
-def verify_pin_reset():
-    token_in = request.form.get("token")
-    new_pin = request.form.get("new_pin")
-    s = get_student(session['student_id'])
-    if token_in == s["reset_token"] and s["reset_token"] is not None:
-        cursor.execute("UPDATE students SET parent_pin=?, reset_token=NULL WHERE id=?", (new_pin, s['id']))
-        db.commit()
-        flash("PIN reset successful!")
-    else:
-        flash("Invalid token.")
-    return redirect("/dashboard")
-
-# ---------- SOCIAL & DANGER ZONE ----------
-@app.route("/leaderboard")
-def leaderboard():
-    cursor.execute("SELECT name, streak FROM students ORDER BY streak DESC LIMIT 10")
-    top_comrades = cursor.fetchall()
-    return render_template("leaderboard.html", top_comrades=top_comrades)
 
 @app.route("/reset_plan", methods=["POST"])
 def reset_plan():
-    cursor.execute("""
-        UPDATE students SET usable_balance=0, sealed_balance=0, emergency_fund=0, 
-        daily_rate=0, days_in_plan=0, streak=0, last_day=? WHERE id=?
-    """, (today_str(), session['student_id']))
-    db.commit()
-    flash("Plan Reset. Start a new mission.")
+    conn = get_db()
+    cur = conn.cursor()
+    cur.execute("UPDATE students SET usable_balance=0, sealed_balance=0, emergency_fund=0, streak=0, days_in_plan=0 WHERE id=%s", (session['student_id'],))
+    conn.commit()
+    cur.close()
+    conn.close()
+    flash("Plan has been wiped.")
     return redirect("/dashboard")
 
 @app.route("/logout")
@@ -282,18 +247,6 @@ def logout():
     session.clear()
     return redirect("/")
 
-@app.before_request
-def session_guard():
-    # We only care about checking logged-in users
-    student_id = session.get("student_id")
-    
-    if student_id:
-        # Check if this ID actually exists in our current budget.db
-        cursor.execute("SELECT id FROM students WHERE id = ?", (student_id,))
-        if cursor.fetchone() is None:
-            # If the database was reset, this ID will be missing.
-            # We clear the session to prevent the 'NoneType' crash.
-            session.clear()
-            flash("System synchronized. Please log in again.")
 if __name__ == "__main__":
+    # For local development; Render will use gunicorn
     app.run(host="0.0.0.0", port=10000, debug=True)

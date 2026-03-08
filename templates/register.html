@@ -1,51 +1,104 @@
 <!DOCTYPE html>
-<html>
+<html lang="en">
 
 <head>
-    <title>Comrade Register</title>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Comrade Register - Multi-Uni Edition</title>
     <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+    <style>
+        .warning-text {
+            color: #ff4444;
+            font-size: 0.8rem;
+            display: none;
+            margin-top: 5px;
+        }
+
+        /* Style for the PIN input to ensure it feels secure */
+        input[name="pin"] {
+            letter-spacing: 0.5em;
+            text-align: center;
+            font-weight: bold;
+        }
+    </style>
 </head>
 
 <body>
     <div class="container">
-        <div class="form-card">
-            <h1>Join Comrade Plan</h1>
-            <form action="/register" method="POST">
-                <input type="text" name="name" placeholder="Full Name" required>
-                <input type="email" name="email" placeholder="Campus Email" required>
-                <input type="password" name="password" placeholder="Password" required>
-                <input type="number" name="money" placeholder="Total Allowance (KES)" required>
-                <input type="number" name="days" placeholder="Days to Survive" required>
+        <header>
+            <h1>Join the Mission 🇰🇪</h1>
+            <p>Accessible to all University Comrades</p>
+        </header>
 
-                <label>Emergency Buffer (%):</label>
-                <input type="number" id="bufferInput" name="buffer_percent" value="10" required>
+        {% with messages = get_flashed_messages() %}
+        {% if messages %}
+        <div class="warning"
+            style="background: rgba(255, 68, 68, 0.1); border: 1px solid #ff4444; padding: 10px; border-radius: 8px; margin-bottom: 20px;">
+            {{ messages[0] }}
+        </div>
+        {% endif %}
+        {% endwith %}
 
-                <div class="tiered-buttons">
-                    <button type="button" class="btn-sm" onclick="setBuffer(5)">Survivor (5%)</button>
-                    <button type="button" class="btn-sm" onclick="setBuffer(10)">Comrade (10%)</button>
-                    <button type="button" class="btn-sm" onclick="setBuffer(20)">Minister (20%)</button>
+        <div class="card full">
+            <form action="/register" method="POST" id="regForm">
+                <h3>Personal Details</h3>
+                <input type="text" name="name" placeholder="Full Name (as per Student ID)" required>
+                <input type="email" name="email" placeholder="University or Personal Email" required>
+                <input type="password" name="password" placeholder="Account Password" required>
+
+                <hr style="border: 0.5px solid #334155; margin: 20px 0;">
+
+                <h3>Security Control</h3>
+                <label for="pin">Set Unique Emergency PIN (4 Digits):</label>
+                <p style="font-size: 0.7rem; color: var(--text-muted); margin-bottom: 10px;">
+                    This replaces the default '1234'. You will need this to unlock emergency funds.
+                </p>
+                <input type="password" name="pin" id="pin" maxlength="4" minlength="4" pattern="\d{4}"
+                    placeholder="0000" required inputmode="numeric">
+
+                <hr style="border: 0.5px solid #334155; margin: 20px 0;">
+
+                <h3>Financial Plan</h3>
+                <input type="number" name="money" placeholder="Total Allowance (KES)" min="1" step="0.01" required>
+                <input type="number" name="days" placeholder="Days to Survive (e.g. 30)" min="1" required>
+
+                <label for="bufferInput">Emergency Buffer (%):</label>
+                <input type="number" name="buffer_percent" id="bufferInput" value="10" min="0" max="50" required>
+                <div id="shereheWarning" class="warning-text">
+                    ⚠️ Warning: 0% buffer means one "sherehe" invitation will break your budget!
                 </div>
 
-                <p id="bufferWarning" class="warning-text" style="display:none;">
-                    ⚠ Warning: Without a buffer, one 'sherehe' could leave you broke for a week. Are you sure?
-                </p>
-
-                <button type="submit">Start My Plan</button>
+                <button type="submit" style="margin-top: 20px; width: 100%;">Verify Email & Create Account</button>
             </form>
-            <p style="text-align:center">Already a member? <a href="/">Login</a></p>
+        </div>
+
+        <div style="text-align: center; margin-top: 20px;">
+            <a href="/" style="color: var(--text-muted); text-decoration: none;">Already a Comrade? Login</a>
         </div>
     </div>
 
     <script>
-        function setBuffer(val) {
-            document.getElementById('bufferInput').value = val;
-            checkBuffer();
-        }
-        function checkBuffer() {
-            const val = document.getElementById('bufferInput').value;
-            document.getElementById('bufferWarning').style.display = (val <= 0) ? 'block' : 'none';
-        }
-        document.getElementById('bufferInput').oninput = checkBuffer;
+        const bufferInput = document.getElementById('bufferInput');
+        const warning = document.getElementById('shereheWarning');
+        const regForm = document.getElementById('regForm');
+
+        // Sherehe Warning Logic
+        bufferInput.addEventListener('input', function () {
+            if (this.value == 0) {
+                warning.style.display = 'block';
+            } else {
+                warning.style.display = 'none';
+            }
+        });
+
+        // Client-side validation to prevent short PINs
+        regForm.addEventListener('submit', function (e) {
+            const pin = document.getElementById('pin').value;
+            if (pin.length !== 4) {
+                alert("Comrade, your Emergency PIN must be exactly 4 digits.");
+                e.preventDefault();
+            }
+        });
     </script>
 </body>
 
