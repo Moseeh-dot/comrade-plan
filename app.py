@@ -79,11 +79,26 @@ def register():
             conn.commit()
             
             # Send Verification Email
+            # Send Professional Verification Email
             verify_url = url_for('verify_email', token=token, _external=True)
-            msg = Message("Verify Your Comrade Plan Account", 
-                          sender=app.config['MAIL_USERNAME'], 
-                          recipients=[email])
-            msg.body = f"Habari {name}! Click the link to verify your account: {verify_url}"
+            msg = Message("🚀 Verify Your Comrade Plan Account", 
+              sender=app.config['MAIL_USERNAME'], 
+              recipients=[email])
+
+            # HTML Body for a professional "Startup" feel
+            msg.html = f"""
+             <div style="font-family: Arial, sans-serif; max-width: 600px; margin: auto; border: 1px solid #ddd; padding: 20px; border-radius: 10px;">
+                <h2 style="color: #2c3e50; text-align: center;">Welcome to Comrade Plan KE!</h2>
+                <p>Habari {name},</p>
+                <p>You're one step away from mastering your university budget. Click the button below to verify your account and unlock your daily funds.</p>
+            <div style="text-align: center; margin: 30px 0;">
+        <a href="{verify_url}" style="background-color: #e67e22; color: white; padding: 15px 25px; text-decoration: none; border-radius: 5px; font-weight: bold;">Verify My Account</a>
+    </div>
+        <p style="font-size: 12px; color: #7f8c8d;">If you didn't sign up for Comrade Plan, please ignore this email.</p>
+       <hr style="border: 0; border-top: 1px solid #eee;">
+       <p style="text-align: center; font-weight: bold;">Financially Disciplined. Comrade Strong.</p>
+    </div>
+"""
             mail.send(msg)
             
             flash("Success! Check your email to verify your account.")
@@ -96,6 +111,7 @@ def register():
         finally:
             cur.close()
             conn.close()
+    
     return render_template("register.html")
 
 @app.route("/verify/<token>")
