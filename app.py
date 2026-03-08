@@ -227,6 +227,16 @@ def emergency_release():
 def logout():
     session.clear()
     return redirect("/")
-
+@app.route("/test_mail")
+def test_mail():
+    try:
+        msg = Message("Startup Connection Test",
+                      sender=app.config['MAIL_USERNAME'],
+                      recipients=[app.config['MAIL_USERNAME']]) # Sends to yourself
+        msg.body = "If you are reading this, your Gmail App Password is working!"
+        mail.send(msg)
+        return "<h1>Success!</h1><p>Test email sent to your Gmail address.</p>"
+    except Exception as e:
+        return f"<h1>Failed!</h1><p>Error: {str(e)}</p>"
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=10000)
