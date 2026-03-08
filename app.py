@@ -11,7 +11,7 @@ app = Flask(__name__)
 # Security: Prioritize Render Environment Variable for the secret key
 app.secret_key = os.environ.get("SECRET_KEY", "comrade_secure_key_2026")
 
-# ---------- MAIL CONFIGURATION (Verification & PIN Reset) ----------
+# ---------- MAIL CONFIGURATION ----------
 app.config.update(
     MAIL_SERVER='smtp.gmail.com',
     MAIL_PORT=587,
@@ -23,18 +23,32 @@ mail = Mail(app)
 
 # ---------- DATABASE CONNECTION (PostgreSQL) ----------
 def get_db():
-    # Use SSL mode 'require' as enforced by Render PostgreSQL
-    conn = psycopg2.connect(os.environ.get("DATABASE_URL"), sslmode='require')
+    # Fetch the Render URL from environment
+    db_url = os.environ.get("DATABASE_URL")
+    
+    # DEBUG FIX: SQLAlchemy/Psycopg often requires 'postgresql://' instead of 'postgres://'
+    if db_url and db_url.startswith("postgres://"):
+        db_url = db_url.replace("postgres://", "postgresql://", 1)
+        
+    # Connect with SSL mode required for Render PostgreSQL
+    conn = psycopg2.connect(db_url, sslmode='require')
     return conn
 
-# ---------- AUTHENTICATION & REGISTRATION ----------
+# ---------- ROUTES & AUTHENTICATION ----------
+
+@app.route("/")
+def index():
+    """FIXED: Added root route to prevent 404 error on homepage"""
+    if 'student_id' in session:
+        return redirect(url_for('dashboard'))
+    return render_template("index.html")
+
 @app.route("/register", methods=["GET", "POST"])
 def register():
     if request.method == "POST":
         name = request.form["name"].strip()
         email = request.form["email"].strip().lower()
         password = generate_password_hash(request.form["password"])
-        # Fix: User now sets their own unique Emergency PIN at signup
         pin = request.form["pin"] 
         token = secrets.token_hex(16)
         
@@ -69,7 +83,7 @@ def register():
             msg.body = f"Habari {name}! Click the link to verify your account and start your plan: {verify_url}"
             mail.send(msg)
             
-            flash("Registration successful! Check your email to verify your account.")
+            flash("Registration successful! Check your email to verify.")
             return redirect("/")
         except Exception as e:
             flash("Registration failed. Email may already be in use.")
@@ -115,6 +129,7 @@ def login():
     return redirect("/")
 
 # ---------- DASHBOARD CORE ----------
+
 @app.route("/dashboard")
 def dashboard():
     if 'student_id' not in session: return redirect("/")
@@ -136,7 +151,6 @@ def dashboard():
             last_day = %s WHERE id = %s
         """, (release, release, date.today().isoformat(), s['id']))
         conn.commit()
-        # Refresh local data variable
         cur.execute("SELECT * FROM students WHERE id=%s", (s['id'],))
         s = cur.fetchone()
 
@@ -153,13 +167,12 @@ def dashboard():
         "streak": s["streak"]
     }
     
-    badge = "Iron Discipline" if s["streak"] >= 10 else "Budget Rookie"
-    
     cur.close()
     conn.close()
-    return render_template("dashboard.html", data=data, badge=badge)
+    return render_template("dashboard.html", data=data)
 
 # ---------- FINANCIAL OPERATIONS ----------
+
 @app.route("/spend", methods=["POST"])
 def spend():
     try:
@@ -196,50 +209,12 @@ def emergency_release():
     if pin_attempt == s["parent_pin"]:
         cur.execute("UPDATE students SET usable_balance = usable_balance + emergency_fund, emergency_fund = 0 WHERE id=%s", (session['student_id'],))
         conn.commit()
-        flash("Emergency funds released to usable balance!")
+        flash("Emergency funds released!")
     else:
-        flash("Incorrect PIN. Access denied.")
+        flash("Incorrect PIN.")
     
     cur.close()
     conn.close()
-    return redirect("/dashboard")
-
-@app.route("/topup", methods=["POST"])
-def topup():
-    """Logic to restart the plan cycle"""
-    try:
-        money = float(request.form["money"])
-        days = int(request.form["days"])
-        buffer_pct = float(request.form.get("buffer_percent", 10)) / 100
-    except:
-        flash("Invalid values provided.")
-        return redirect("/dashboard")
-
-    emergency = round(money * buffer_pct, 2)
-    daily = round((money - emergency) / days, 2)
-    sealed = round(money - emergency - daily, 2)
-    
-    conn = get_db()
-    cur = conn.cursor()
-    cur.execute("""
-        UPDATE students SET usable_balance=%s, sealed_balance=%s, emergency_fund=%s, 
-        daily_rate=%s, days_in_plan=%s, last_day=%s WHERE id=%s
-    """, (daily, sealed, emergency, daily, days, date.today().isoformat(), session['student_id']))
-    conn.commit()
-    cur.close()
-    conn.close()
-    flash("New Cycle Started!")
-    return redirect("/dashboard")
-
-@app.route("/reset_plan", methods=["POST"])
-def reset_plan():
-    conn = get_db()
-    cur = conn.cursor()
-    cur.execute("UPDATE students SET usable_balance=0, sealed_balance=0, emergency_fund=0, streak=0, days_in_plan=0 WHERE id=%s", (session['student_id'],))
-    conn.commit()
-    cur.close()
-    conn.close()
-    flash("Plan has been wiped.")
     return redirect("/dashboard")
 
 @app.route("/logout")
@@ -248,5 +223,4 @@ def logout():
     return redirect("/")
 
 if __name__ == "__main__":
-    # For local development; Render will use gunicorn
-    app.run(host="0.0.0.0", port=10000, debug=True)
+    app.run(host="0.0.0.0", port=10000)
