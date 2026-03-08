@@ -52,22 +52,25 @@ def register():
         pin = request.form["pin"] 
         token = secrets.token_hex(16)
         
+        conn = get_db()
+        cur = conn.cursor()
+
         try:
+            # --- STARTUP CLEANUP LOGIC ---
+            # This deletes any old, unverified attempt for this email 
+            # so the student doesn't get the "Email in use" error.
+            cur.execute("DELETE FROM students WHERE email = %s AND is_verified = FALSE", (email,))
+            conn.commit() 
+            # -----------------------------
+
             total_money = float(request.form["money"])
             days = int(request.form["days"])
             buffer_pct = float(request.form.get("buffer_percent", 10)) / 100
-        except (ValueError, TypeError):
-            flash("Invalid financial data entered.")
-            return redirect("/register")
 
-        # ACCOUNTING LOGIC: Strategic Capital Split
-        emergency = round(total_money * buffer_pct, 2)
-        daily_rate = round((total_money - emergency) / days, 2)
-        sealed = round(total_money - emergency - daily_rate, 2)
+            emergency = round(total_money * buffer_pct, 2)
+            daily_rate = round((total_money - emergency) / days, 2)
+            sealed = round(total_money - emergency - daily_rate, 2)
 
-        conn = get_db()
-        cur = conn.cursor()
-        try:
             cur.execute("""
                 INSERT INTO students (name, email, password, parent_pin, usable_balance, 
                 sealed_balance, emergency_fund, daily_rate, days_in_plan, last_day, verification_token)
@@ -80,13 +83,16 @@ def register():
             msg = Message("Verify Your Comrade Plan Account", 
                           sender=app.config['MAIL_USERNAME'], 
                           recipients=[email])
-            msg.body = f"Habari {name}! Click the link to verify your account and start your plan: {verify_url}"
+            msg.body = f"Habari {name}! Click the link to verify your account: {verify_url}"
             mail.send(msg)
             
-            flash("Registration successful! Check your email to verify.")
+            flash("Success! Check your email to verify your account.")
             return redirect("/")
+            
         except Exception as e:
-            flash("Registration failed. Email may already be in use.")
+            # If the account WAS verified (TRUE), the DELETE above won't touch it,
+            # and this block will catch the 'Email in Use' error for real accounts.
+            flash("Registration failed. This email is already verified and in use.")
         finally:
             cur.close()
             conn.close()
