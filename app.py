@@ -6,6 +6,7 @@ import secrets
 import os
 from datetime import date
 from werkzeug.security import generate_password_hash, check_password_hash
+from threading import Thread
 
 app = Flask(__name__)
 # Security: Prioritize Render Environment Variable for the secret key
@@ -21,16 +22,24 @@ app.config.update(
 )
 mail = Mail(app)
 
+# ---------- ASYNC EMAIL HELPER ----------
+def send_async_email(app, msg):
+    """Sends email on a background thread to prevent Gunicorn WORKER TIMEOUTs."""
+    with app.app_context():
+        try:
+            mail.send(msg)
+            print(f"Background email successfully handed off to {msg.recipients}")
+        except Exception as e:
+            print(f"CRITICAL: Failed to send background email: {e}")
+
 # ---------- DATABASE CONNECTION (PostgreSQL) ----------
 def get_db():
-    # Fetch the Render URL from environment
     db_url = os.environ.get("DATABASE_URL")
     
-    # DEBUG FIX: SQLAlchemy/Psycopg often requires 'postgresql://' instead of 'postgres://'
+    # SQLAlchemy/Psycopg requires 'postgresql://' instead of 'postgres://'
     if db_url and db_url.startswith("postgres://"):
         db_url = db_url.replace("postgres://", "postgresql://", 1)
         
-    # Connect with SSL mode required for Render PostgreSQL
     conn = psycopg2.connect(db_url, sslmode='require')
     return conn
 
@@ -38,7 +47,6 @@ def get_db():
 
 @app.route("/")
 def index():
-    """FIXED: Added root route to prevent 404 error on homepage"""
     if 'student_id' in session:
         return redirect(url_for('dashboard'))
     return render_template("index.html")
@@ -52,16 +60,17 @@ def register():
         pin = request.form["pin"] 
         token = secrets.token_hex(16)
         
-        conn = get_db()
-        cur = conn.cursor()
+        # Safely scope the database variables
+        conn = None
+        cur = None
 
         try:
-            # --- STARTUP CLEANUP LOGIC ---
-            # This deletes any old, unverified attempt for this email 
-            # so the student doesn't get the "Email in use" error.
+            conn = get_db()
+            cur = conn.cursor()
+
+            # Delete unverified attempts so the student doesn't get a false "Email in use"
             cur.execute("DELETE FROM students WHERE email = %s AND is_verified = FALSE", (email,))
             conn.commit() 
-            # -----------------------------
 
             total_money = float(request.form["money"])
             days = int(request.form["days"])
@@ -78,54 +87,63 @@ def register():
             """, (name, email, password, pin, daily_rate, sealed, emergency, daily_rate, days, date.today().isoformat(), token))
             conn.commit()
             
-            # Send Verification Email
-            # Send Professional Verification Email
+            # --- THE ASYNC EMAIL FIX ---
             verify_url = url_for('verify_email', token=token, _external=True)
             msg = Message("🚀 Verify Your Comrade Plan Account", 
               sender=app.config['MAIL_USERNAME'], 
               recipients=[email])
 
-            # HTML Body for a professional "Startup" feel
             msg.html = f"""
-             <div style="font-family: Arial, sans-serif; max-width: 600px; margin: auto; border: 1px solid #ddd; padding: 20px; border-radius: 10px;">
+            <div style="font-family: Arial, sans-serif; max-width: 600px; margin: auto; border: 1px solid #ddd; padding: 20px; border-radius: 10px;">
                 <h2 style="color: #2c3e50; text-align: center;">Welcome to Comrade Plan KE!</h2>
                 <p>Habari {name},</p>
                 <p>You're one step away from mastering your university budget. Click the button below to verify your account and unlock your daily funds.</p>
-            <div style="text-align: center; margin: 30px 0;">
-        <a href="{verify_url}" style="background-color: #e67e22; color: white; padding: 15px 25px; text-decoration: none; border-radius: 5px; font-weight: bold;">Verify My Account</a>
-    </div>
-        <p style="font-size: 12px; color: #7f8c8d;">If you didn't sign up for Comrade Plan, please ignore this email.</p>
-       <hr style="border: 0; border-top: 1px solid #eee;">
-       <p style="text-align: center; font-weight: bold;">Financially Disciplined. Comrade Strong.</p>
-    </div>
-"""
-            mail.send(msg)
+                <div style="text-align: center; margin: 30px 0;">
+                    <a href="{verify_url}" style="background-color: #e67e22; color: white; padding: 15px 25px; text-decoration: none; border-radius: 5px; font-weight: bold;">Verify My Account</a>
+                </div>
+                <p style="font-size: 12px; color: #7f8c8d;">If you didn't sign up for Comrade Plan, please ignore this email.</p>
+                <hr style="border: 0; border-top: 1px solid #eee;">
+                <p style="text-align: center; font-weight: bold;">Financially Disciplined. Comrade Strong.</p>
+            </div>
+            """
+            
+            # Dispatch the email to the background thread
+            thread = Thread(target=send_async_email, args=(app, msg))
+            thread.start()
             
             flash("Success! Check your email to verify your account.")
             return redirect("/")
             
         except Exception as e:
-            # If the account WAS verified (TRUE), the DELETE above won't touch it,
-            # and this block will catch the 'Email in Use' error for real accounts.
+            print(f"DB/Registration Error: {e}") # This will show up in Render Logs
             flash("Registration failed. This email is already verified and in use.")
         finally:
-            cur.close()
-            conn.close()
+            # Safe teardown: only close if they were successfully opened
+            if cur: cur.close()
+            if conn: conn.close()
     
     return render_template("register.html")
 
 @app.route("/verify/<token>")
 def verify_email(token):
-    conn = get_db()
-    cur = conn.cursor()
-    cur.execute("UPDATE students SET is_verified=TRUE, verification_token=NULL WHERE verification_token=%s", (token,))
-    conn.commit()
-    if cur.rowcount > 0:
-        flash("Email verified successfully! You can now login.")
-    else:
-        flash("Verification link is invalid or expired.")
-    cur.close()
-    conn.close()
+    conn = None
+    cur = None
+    try:
+        conn = get_db()
+        cur = conn.cursor()
+        cur.execute("UPDATE students SET is_verified=TRUE, verification_token=NULL WHERE verification_token=%s", (token,))
+        conn.commit()
+        if cur.rowcount > 0:
+            flash("Email verified successfully! You can now login.")
+        else:
+            flash("Verification link is invalid or expired.")
+    except Exception as e:
+        flash("An error occurred during verification.")
+        print(f"Verification Error: {e}")
+    finally:
+        if cur: cur.close()
+        if conn: conn.close()
+        
     return redirect("/")
 
 @app.route("/login", methods=["POST"])
@@ -133,21 +151,29 @@ def login():
     email = request.form["email"].strip().lower()
     password = request.form["password"]
     
-    conn = get_db()
-    cur = conn.cursor(cursor_factory=RealDictCursor)
-    cur.execute("SELECT * FROM students WHERE email=%s", (email,))
-    user = cur.fetchone()
-    cur.close()
-    conn.close()
-
-    if user and check_password_hash(user["password"], password):
-        if not user['is_verified']:
-            flash("Account not verified. Please check your email.")
-            return redirect("/")
-        session['student_id'] = user["id"]
-        return redirect("/dashboard")
-    
-    flash("Invalid email or password.")
+    conn = None
+    cur = None
+    try:
+        conn = get_db()
+        cur = conn.cursor(cursor_factory=RealDictCursor)
+        cur.execute("SELECT * FROM students WHERE email=%s", (email,))
+        user = cur.fetchone()
+        
+        if user and check_password_hash(user["password"], password):
+            if not user['is_verified']:
+                flash("Account not verified. Please check your email.")
+                return redirect("/")
+            session['student_id'] = user["id"]
+            return redirect("/dashboard")
+        
+        flash("Invalid email or password.")
+    except Exception as e:
+        flash("A server error occurred during login.")
+        print(f"Login Error: {e}")
+    finally:
+        if cur: cur.close()
+        if conn: conn.close()
+        
     return redirect("/")
 
 # ---------- DASHBOARD CORE ----------
@@ -156,42 +182,56 @@ def login():
 def dashboard():
     if 'student_id' not in session: return redirect("/")
     
-    conn = get_db()
-    cur = conn.cursor(cursor_factory=RealDictCursor)
-    cur.execute("SELECT * FROM students WHERE id=%s", (session['student_id'],))
-    s = cur.fetchone()
-    
-    # Daily Auto-Release Logic
-    if s["last_day"] != date.today().isoformat():
-        release = min(s["daily_rate"], s["sealed_balance"])
-        cur.execute("""
-            UPDATE students SET 
-            usable_balance = usable_balance + %s, 
-            sealed_balance = GREATEST(0, sealed_balance - %s),
-            days_in_plan = GREATEST(0, days_in_plan - 1),
-            streak = streak + 1,
-            last_day = %s WHERE id = %s
-        """, (release, release, date.today().isoformat(), s['id']))
-        conn.commit()
-        cur.execute("SELECT * FROM students WHERE id=%s", (s['id'],))
+    conn = None
+    cur = None
+    try:
+        conn = get_db()
+        cur = conn.cursor(cursor_factory=RealDictCursor)
+        cur.execute("SELECT * FROM students WHERE id=%s", (session['student_id'],))
         s = cur.fetchone()
+        
+        if not s:
+            session.clear()
+            return redirect("/")
 
-    cur.execute("SELECT SUM(amount) as total FROM spending WHERE student_id=%s AND date=%s", (s['id'], date.today().isoformat()))
-    spent_today = cur.fetchone()["total"] or 0.0
-    
-    data = {
-        "usable": round(s["usable_balance"], 2),
-        "sealed": round(s["sealed_balance"], 2),
-        "emergency": round(s["emergency_fund"], 2),
-        "daily_limit": round(s["daily_rate"], 2),
-        "spent_today": round(spent_today, 2),
-        "days_left": s["days_in_plan"],
-        "streak": s["streak"]
-    }
-    
-    cur.close()
-    conn.close()
-    return render_template("dashboard.html", data=data)
+        # Daily Auto-Release Logic
+        if s["last_day"] != date.today().isoformat():
+            release = min(s["daily_rate"], s["sealed_balance"])
+            cur.execute("""
+                UPDATE students SET 
+                usable_balance = usable_balance + %s, 
+                sealed_balance = GREATEST(0, sealed_balance - %s),
+                days_in_plan = GREATEST(0, days_in_plan - 1),
+                streak = streak + 1,
+                last_day = %s WHERE id = %s
+            """, (release, release, date.today().isoformat(), s['id']))
+            conn.commit()
+            
+            # Fetch updated data
+            cur.execute("SELECT * FROM students WHERE id=%s", (s['id'],))
+            s = cur.fetchone()
+
+        cur.execute("SELECT SUM(amount) as total FROM spending WHERE student_id=%s AND date=%s", (s['id'], date.today().isoformat()))
+        spent_today = cur.fetchone()["total"] or 0.0
+        
+        data = {
+            "usable": round(s["usable_balance"], 2),
+            "sealed": round(s["sealed_balance"], 2),
+            "emergency": round(s["emergency_fund"], 2),
+            "daily_limit": round(s["daily_rate"], 2),
+            "spent_today": round(spent_today, 2),
+            "days_left": s["days_in_plan"],
+            "streak": s["streak"]
+        }
+        return render_template("dashboard.html", data=data)
+        
+    except Exception as e:
+        print(f"Dashboard Error: {e}")
+        flash("Error loading dashboard data.")
+        return redirect("/")
+    finally:
+        if cur: cur.close()
+        if conn: conn.close()
 
 # ---------- FINANCIAL OPERATIONS ----------
 
@@ -200,49 +240,69 @@ def spend():
     try:
         amt = float(request.form["amount"])
         if amt <= 0: raise ValueError
-    except:
+    except ValueError:
         flash("Please enter a positive numeric amount.")
         return redirect("/dashboard")
 
-    conn = get_db()
-    cur = conn.cursor(cursor_factory=RealDictCursor)
-    cur.execute("SELECT usable_balance FROM students WHERE id=%s", (session['student_id'],))
-    balance = cur.fetchone()["usable_balance"]
+    conn = None
+    cur = None
+    try:
+        conn = get_db()
+        cur = conn.cursor(cursor_factory=RealDictCursor)
+        cur.execute("SELECT usable_balance FROM students WHERE id=%s", (session['student_id'],))
+        result = cur.fetchone()
+        
+        if not result:
+            return redirect("/")
+            
+        balance = result["usable_balance"]
 
-    if amt <= balance:
-        cur.execute("UPDATE students SET usable_balance = usable_balance - %s WHERE id=%s", (amt, session['student_id']))
-        cur.execute("INSERT INTO spending (student_id, date, amount) VALUES (%s, %s, %s)", (session['student_id'], date.today().isoformat(), amt))
-        conn.commit()
-    else:
-        flash("You have exceeded your usable balance for today!")
-    
-    cur.close()
-    conn.close()
+        if amt <= balance:
+            cur.execute("UPDATE students SET usable_balance = usable_balance - %s WHERE id=%s", (amt, session['student_id']))
+            cur.execute("INSERT INTO spending (student_id, date, amount) VALUES (%s, %s, %s)", (session['student_id'], date.today().isoformat(), amt))
+            conn.commit()
+        else:
+            flash("You have exceeded your usable balance for today!")
+    except Exception as e:
+        print(f"Spending Error: {e}")
+        flash("An error occurred while processing the transaction.")
+    finally:
+        if cur: cur.close()
+        if conn: conn.close()
+        
     return redirect("/dashboard")
 
 @app.route("/emergency_release", methods=["POST"])
 def emergency_release():
     pin_attempt = request.form.get("pin")
-    conn = get_db()
-    cur = conn.cursor(cursor_factory=RealDictCursor)
-    cur.execute("SELECT parent_pin, emergency_fund FROM students WHERE id=%s", (session['student_id'],))
-    s = cur.fetchone()
+    conn = None
+    cur = None
+    try:
+        conn = get_db()
+        cur = conn.cursor(cursor_factory=RealDictCursor)
+        cur.execute("SELECT parent_pin, emergency_fund FROM students WHERE id=%s", (session['student_id'],))
+        s = cur.fetchone()
 
-    if pin_attempt == s["parent_pin"]:
-        cur.execute("UPDATE students SET usable_balance = usable_balance + emergency_fund, emergency_fund = 0 WHERE id=%s", (session['student_id'],))
-        conn.commit()
-        flash("Emergency funds released!")
-    else:
-        flash("Incorrect PIN.")
-    
-    cur.close()
-    conn.close()
+        if s and pin_attempt == s["parent_pin"]:
+            cur.execute("UPDATE students SET usable_balance = usable_balance + emergency_fund, emergency_fund = 0 WHERE id=%s", (session['student_id'],))
+            conn.commit()
+            flash("Emergency funds released!")
+        else:
+            flash("Incorrect PIN.")
+    except Exception as e:
+        print(f"Emergency Release Error: {e}")
+        flash("An error occurred processing the emergency release.")
+    finally:
+        if cur: cur.close()
+        if conn: conn.close()
+        
     return redirect("/dashboard")
 
 @app.route("/logout")
 def logout():
     session.clear()
     return redirect("/")
+
 @app.route("/test_mail")
 def test_mail():
     try:
@@ -254,5 +314,7 @@ def test_mail():
         return "<h1>Success!</h1><p>Test email sent to your Gmail address.</p>"
     except Exception as e:
         return f"<h1>Failed!</h1><p>Error: {str(e)}</p>"
+
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=10000)
+    
