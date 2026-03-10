@@ -13,13 +13,18 @@ app = Flask(__name__)
 app.secret_key = os.environ.get("SECRET_KEY", "comrade_secure_key_2026")
 
 # ---------- MAIL CONFIGURATION ----------
+# ---------- UPDATED MAIL CONFIGURATION ----------
 app.config.update(
     MAIL_SERVER='smtp.gmail.com',
     MAIL_PORT=587,
     MAIL_USE_TLS=True,
+    MAIL_USE_SSL=False,  # Force SSL False to avoid port conflicts
     MAIL_USERNAME=os.environ.get("MAIL_USER"),
-    MAIL_PASSWORD=os.environ.get("MAIL_PASS")
+    MAIL_PASSWORD=os.environ.get("MAIL_PASS"),
+    MAIL_MAX_EMAILS=None,
+    MAIL_ASCII_ATTACHMENTS=False
 )
+
 mail = Mail(app)
 
 # ---------- ASYNC EMAIL HELPER ----------
