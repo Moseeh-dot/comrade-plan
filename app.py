@@ -16,7 +16,7 @@ app.secret_key = os.environ.get("SECRET_KEY", "comrade_secure_key_2026")
 # ---------- UPDATED MAIL CONFIGURATION ----------
 app.config.update(
     MAIL_SERVER='smtp.gmail.com',
-    MAIL_PORT=2525,
+    MAIL_PORT=587,
     MAIL_USE_TLS=True,
     MAIL_USE_SSL=False,  # Force SSL False to avoid port conflicts
     MAIL_USERNAME=os.environ.get("MAIL_USER"),
