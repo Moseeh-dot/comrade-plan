@@ -9,7 +9,7 @@ from werkzeug.security import generate_password_hash, check_password_hash
 from threading import Thread
 
 app = Flask(__name__)
-# Security: Prioritize Render Environment Variable for the secret key
+# Security: Prioritize Render Environment Variable
 app.secret_key = os.environ.get("SECRET_KEY", "comrade_secure_key_2026")
 
 # ---------- MAIL CONFIGURATION ----------
@@ -24,26 +24,21 @@ mail = Mail(app)
 
 # ---------- ASYNC EMAIL HELPER ----------
 def send_async_email(app, msg):
-    """Sends email on a background thread to prevent Gunicorn WORKER TIMEOUTs."""
     with app.app_context():
         try:
             mail.send(msg)
-            print(f"Background email successfully handed off to {msg.recipients}")
         except Exception as e:
-            print(f"CRITICAL: Failed to send background email: {e}")
+            print(f"CRITICAL Mail Error: {e}")
 
-# ---------- DATABASE CONNECTION (PostgreSQL) ----------
+# ---------- DATABASE CONNECTION ----------
 def get_db():
     db_url = os.environ.get("DATABASE_URL")
-    
-    # SQLAlchemy/Psycopg requires 'postgresql://' instead of 'postgres://'
     if db_url and db_url.startswith("postgres://"):
         db_url = db_url.replace("postgres://", "postgresql://", 1)
-        
     conn = psycopg2.connect(db_url, sslmode='require')
     return conn
 
-# ---------- ROUTES & AUTHENTICATION ----------
+# ---------- AUTHENTICATION & REGISTRATION ----------
 
 @app.route("/")
 def index():
@@ -59,262 +54,173 @@ def register():
         password = generate_password_hash(request.form["password"])
         pin = request.form["pin"] 
         token = secrets.token_hex(16)
-        
-        # Safely scope the database variables
-        conn = None
-        cur = None
+        conn, cur = None, None
 
         try:
-            conn = get_db()
-            cur = conn.cursor()
-
-            # Delete unverified attempts so the student doesn't get a false "Email in use"
+            conn = get_db(); cur = conn.cursor()
+            # AUTO-CLEANUP: Delete failed, unverified attempts
             cur.execute("DELETE FROM students WHERE email = %s AND is_verified = FALSE", (email,))
             conn.commit() 
 
-            total_money = float(request.form["money"])
-            days = int(request.form["days"])
+            money, days = float(request.form["money"]), int(request.form["days"])
             buffer_pct = float(request.form.get("buffer_percent", 10)) / 100
+            emergency = round(money * buffer_pct, 2)
+            daily_rate = round((money - emergency) / days, 2)
+            sealed = round(money - emergency - daily_rate, 2)
 
-            emergency = round(total_money * buffer_pct, 2)
-            daily_rate = round((total_money - emergency) / days, 2)
-            sealed = round(total_money - emergency - daily_rate, 2)
-
-            cur.execute("""
-                INSERT INTO students (name, email, password, parent_pin, usable_balance, 
+            cur.execute("""INSERT INTO students (name, email, password, parent_pin, usable_balance, 
                 sealed_balance, emergency_fund, daily_rate, days_in_plan, last_day, verification_token)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-            """, (name, email, password, pin, daily_rate, sealed, emergency, daily_rate, days, date.today().isoformat(), token))
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""", 
+                (name, email, password, pin, daily_rate, sealed, emergency, daily_rate, days, date.today().isoformat(), token))
             conn.commit()
             
-            # --- THE ASYNC EMAIL FIX ---
             verify_url = url_for('verify_email', token=token, _external=True)
-            msg = Message("🚀 Verify Your Comrade Plan Account", 
-              sender=app.config['MAIL_USERNAME'], 
-              recipients=[email])
-
-            msg.html = f"""
-            <div style="font-family: Arial, sans-serif; max-width: 600px; margin: auto; border: 1px solid #ddd; padding: 20px; border-radius: 10px;">
-                <h2 style="color: #2c3e50; text-align: center;">Welcome to Comrade Plan KE!</h2>
-                <p>Habari {name},</p>
-                <p>You're one step away from mastering your university budget. Click the button below to verify your account and unlock your daily funds.</p>
-                <div style="text-align: center; margin: 30px 0;">
-                    <a href="{verify_url}" style="background-color: #e67e22; color: white; padding: 15px 25px; text-decoration: none; border-radius: 5px; font-weight: bold;">Verify My Account</a>
-                </div>
-                <p style="font-size: 12px; color: #7f8c8d;">If you didn't sign up for Comrade Plan, please ignore this email.</p>
-                <hr style="border: 0; border-top: 1px solid #eee;">
-                <p style="text-align: center; font-weight: bold;">Financially Disciplined. Comrade Strong.</p>
-            </div>
-            """
+            msg = Message("🚀 Verify Your Comrade Plan", sender=app.config['MAIL_USERNAME'], recipients=[email])
+            msg.html = f"<h2>Habari {name}!</h2><p>Click below to verify:</p><a href='{verify_url}'>Verify Account</a>"
+            Thread(target=send_async_email, args=(app, msg)).start()
             
-            # Dispatch the email to the background thread
-            thread = Thread(target=send_async_email, args=(app, msg))
-            thread.start()
-            
-            flash("Success! Check your email to verify your account.")
-            return redirect("/")
-            
+            flash("Success! Check your email to verify."); return redirect("/")
         except Exception as e:
-            print(f"DB/Registration Error: {e}") # This will show up in Render Logs
-            flash("Registration failed. This email is already verified and in use.")
+            flash("Registration failed. Email may be in use."); print(f"Reg Error: {e}")
         finally:
-            # Safe teardown: only close if they were successfully opened
-            if cur: cur.close()
+            if cur: cur.close(); 
             if conn: conn.close()
-    
     return render_template("register.html")
+
+# ---------- PASSWORD RESET ROUTES ----------
+
+@app.route("/forgot_password", methods=["GET", "POST"])
+def forgot_password():
+    if request.method == "POST":
+        email = request.form["email"].strip().lower()
+        token = secrets.token_hex(16)
+        conn, cur = None, None
+        try:
+            conn = get_db(); cur = conn.cursor()
+            cur.execute("UPDATE students SET verification_token=%s WHERE email=%s", (token, email))
+            conn.commit()
+            if cur.rowcount > 0:
+                reset_url = url_for('reset_password', token=token, _external=True)
+                msg = Message("🔒 Reset Your Password", sender=app.config['MAIL_USERNAME'], recipients=[email])
+                msg.html = f"<h3>Reset Request</h3><p>Click <a href='{reset_url}'>here</a> to reset your password.</p>"
+                Thread(target=send_async_email, args=(app, msg)).start()
+                flash("Reset link sent to your email.")
+            else:
+                flash("Email not found.")
+        finally:
+            if cur: cur.close(); 
+            if conn: conn.close()
+        return redirect("/")
+    return render_template("forgot_password.html")
+
+@app.route("/reset_password/<token>", methods=["GET", "POST"])
+def reset_password(token):
+    if request.method == "POST":
+        new_pw = generate_password_hash(request.form["password"])
+        conn, cur = None, None
+        try:
+            conn = get_db(); cur = conn.cursor()
+            cur.execute("UPDATE students SET password=%s, verification_token=NULL WHERE verification_token=%s", (new_pw, token))
+            conn.commit()
+            flash("Password updated! Please login.")
+        finally:
+            if cur: cur.close(); 
+            if conn: conn.close()
+        return redirect("/")
+    return render_template("reset_password.html", token=token)
+
+# ---------- DASHBOARD & CORE LOGIC ----------
 
 @app.route("/verify/<token>")
 def verify_email(token):
-    conn = None
-    cur = None
+    conn, cur = None, None
     try:
-        conn = get_db()
-        cur = conn.cursor()
+        conn = get_db(); cur = conn.cursor()
         cur.execute("UPDATE students SET is_verified=TRUE, verification_token=NULL WHERE verification_token=%s", (token,))
         conn.commit()
-        if cur.rowcount > 0:
-            flash("Email verified successfully! You can now login.")
-        else:
-            flash("Verification link is invalid or expired.")
-    except Exception as e:
-        flash("An error occurred during verification.")
-        print(f"Verification Error: {e}")
+        flash("Verified! You can now login.") if cur.rowcount > 0 else flash("Invalid link.")
     finally:
-        if cur: cur.close()
+        if cur: cur.close(); 
         if conn: conn.close()
-        
     return redirect("/")
 
 @app.route("/login", methods=["POST"])
 def login():
-    email = request.form["email"].strip().lower()
-    password = request.form["password"]
-    
-    conn = None
-    cur = None
+    email, password = request.form["email"].strip().lower(), request.form["password"]
+    conn, cur = None, None
     try:
-        conn = get_db()
-        cur = conn.cursor(cursor_factory=RealDictCursor)
+        conn = get_db(); cur = conn.cursor(cursor_factory=RealDictCursor)
         cur.execute("SELECT * FROM students WHERE email=%s", (email,))
         user = cur.fetchone()
-        
         if user and check_password_hash(user["password"], password):
-            if not user['is_verified']:
-                flash("Account not verified. Please check your email.")
-                return redirect("/")
+            if not user['is_verified']: flash("Please verify your email."); return redirect("/")
             session['student_id'] = user["id"]
             return redirect("/dashboard")
-        
-        flash("Invalid email or password.")
-    except Exception as e:
-        flash("A server error occurred during login.")
-        print(f"Login Error: {e}")
+        flash("Invalid credentials.")
     finally:
-        if cur: cur.close()
+        if cur: cur.close(); 
         if conn: conn.close()
-        
     return redirect("/")
-
-# ---------- DASHBOARD CORE ----------
 
 @app.route("/dashboard")
 def dashboard():
     if 'student_id' not in session: return redirect("/")
-    
-    conn = None
-    cur = None
+    conn, cur = None, None
     try:
-        conn = get_db()
-        cur = conn.cursor(cursor_factory=RealDictCursor)
+        conn = get_db(); cur = conn.cursor(cursor_factory=RealDictCursor)
         cur.execute("SELECT * FROM students WHERE id=%s", (session['student_id'],))
         s = cur.fetchone()
         
-        if not s:
-            session.clear()
-            return redirect("/")
-
-        # Daily Auto-Release Logic
+        # Daily Release Logic
         if s["last_day"] != date.today().isoformat():
             release = min(s["daily_rate"], s["sealed_balance"])
-            cur.execute("""
-                UPDATE students SET 
-                usable_balance = usable_balance + %s, 
-                sealed_balance = GREATEST(0, sealed_balance - %s),
-                days_in_plan = GREATEST(0, days_in_plan - 1),
-                streak = streak + 1,
-                last_day = %s WHERE id = %s
-            """, (release, release, date.today().isoformat(), s['id']))
-            conn.commit()
-            
-            # Fetch updated data
-            cur.execute("SELECT * FROM students WHERE id=%s", (s['id'],))
-            s = cur.fetchone()
-
+            cur.execute("""UPDATE students SET usable_balance = usable_balance + %s, 
+                sealed_balance = GREATEST(0, sealed_balance - %s), 
+                days_in_plan = GREATEST(0, days_in_plan - 1), 
+                streak = streak + 1, last_day = %s WHERE id = %s""", 
+                (release, release, date.today().isoformat(), s['id']))
+            conn.commit(); cur.execute("SELECT * FROM students WHERE id=%s", (s['id'],)); s = cur.fetchone()
+        
         cur.execute("SELECT SUM(amount) as total FROM spending WHERE student_id=%s AND date=%s", (s['id'], date.today().isoformat()))
-        spent_today = cur.fetchone()["total"] or 0.0
-        
-        data = {
-            "usable": round(s["usable_balance"], 2),
-            "sealed": round(s["sealed_balance"], 2),
-            "emergency": round(s["emergency_fund"], 2),
-            "daily_limit": round(s["daily_rate"], 2),
-            "spent_today": round(spent_today, 2),
-            "days_left": s["days_in_plan"],
-            "streak": s["streak"]
-        }
+        spent = cur.fetchone()["total"] or 0.0
+        data = {"usable": round(s["usable_balance"], 2), "sealed": round(s["sealed_balance"], 2), "emergency": round(s["emergency_fund"], 2), "daily_limit": round(s["daily_rate"], 2), "spent_today": round(spent, 2), "days_left": s["days_in_plan"], "streak": s["streak"]}
         return render_template("dashboard.html", data=data)
-        
-    except Exception as e:
-        print(f"Dashboard Error: {e}")
-        flash("Error loading dashboard data.")
-        return redirect("/")
     finally:
-        if cur: cur.close()
+        if cur: cur.close(); 
         if conn: conn.close()
-
-# ---------- FINANCIAL OPERATIONS ----------
 
 @app.route("/spend", methods=["POST"])
 def spend():
+    amt = float(request.form["amount"])
+    conn, cur = None, None
     try:
-        amt = float(request.form["amount"])
-        if amt <= 0: raise ValueError
-    except ValueError:
-        flash("Please enter a positive numeric amount.")
-        return redirect("/dashboard")
-
-    conn = None
-    cur = None
-    try:
-        conn = get_db()
-        cur = conn.cursor(cursor_factory=RealDictCursor)
+        conn = get_db(); cur = conn.cursor(cursor_factory=RealDictCursor)
         cur.execute("SELECT usable_balance FROM students WHERE id=%s", (session['student_id'],))
-        result = cur.fetchone()
-        
-        if not result:
-            return redirect("/")
-            
-        balance = result["usable_balance"]
-
+        balance = cur.fetchone()["usable_balance"]
         if amt <= balance:
             cur.execute("UPDATE students SET usable_balance = usable_balance - %s WHERE id=%s", (amt, session['student_id']))
             cur.execute("INSERT INTO spending (student_id, date, amount) VALUES (%s, %s, %s)", (session['student_id'], date.today().isoformat(), amt))
             conn.commit()
         else:
-            flash("You have exceeded your usable balance for today!")
-    except Exception as e:
-        print(f"Spending Error: {e}")
-        flash("An error occurred while processing the transaction.")
+            flash("Insufficient funds for today!")
     finally:
-        if cur: cur.close()
+        if cur: cur.close(); 
         if conn: conn.close()
-        
-    return redirect("/dashboard")
-
-@app.route("/emergency_release", methods=["POST"])
-def emergency_release():
-    pin_attempt = request.form.get("pin")
-    conn = None
-    cur = None
-    try:
-        conn = get_db()
-        cur = conn.cursor(cursor_factory=RealDictCursor)
-        cur.execute("SELECT parent_pin, emergency_fund FROM students WHERE id=%s", (session['student_id'],))
-        s = cur.fetchone()
-
-        if s and pin_attempt == s["parent_pin"]:
-            cur.execute("UPDATE students SET usable_balance = usable_balance + emergency_fund, emergency_fund = 0 WHERE id=%s", (session['student_id'],))
-            conn.commit()
-            flash("Emergency funds released!")
-        else:
-            flash("Incorrect PIN.")
-    except Exception as e:
-        print(f"Emergency Release Error: {e}")
-        flash("An error occurred processing the emergency release.")
-    finally:
-        if cur: cur.close()
-        if conn: conn.close()
-        
     return redirect("/dashboard")
 
 @app.route("/logout")
 def logout():
-    session.clear()
-    return redirect("/")
+    session.clear(); return redirect("/")
 
 @app.route("/test_mail")
 def test_mail():
     try:
-        msg = Message("Startup Connection Test",
-                      sender=app.config['MAIL_USERNAME'],
-                      recipients=[app.config['MAIL_USERNAME']]) # Sends to yourself
-        msg.body = "If you are reading this, your Gmail App Password is working!"
+        msg = Message("Connection Test", sender=app.config['MAIL_USERNAME'], recipients=[app.config['MAIL_USERNAME']])
+        msg.body = "Working!"
         mail.send(msg)
-        return "<h1>Success!</h1><p>Test email sent to your Gmail address.</p>"
+        return "<h1>Success!</h1>"
     except Exception as e:
-        return f"<h1>Failed!</h1><p>Error: {str(e)}</p>"
+        return f"<h1>Failed!</h1><p>{str(e)}</p>"
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=10000)
-    
