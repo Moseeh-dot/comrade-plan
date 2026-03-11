@@ -48,21 +48,21 @@
                 {% if data.emergency > 0 %}
                 <p>Status: <strong>LOCKED</strong></p>
                 <h2>KES {{data.emergency}}</h2>
-                <form action="/emergency_release" method="POST">
+                <form action="{{ url_for('emergency_release') }}" method="POST">
                     <input type="password" name="pin" placeholder="Enter PIN" required style="width:50%; margin:0">
                     <button type="submit" class="btn-danger" style="width:40%; padding:10px">Unlock</button>
                 </form>
 
                 <hr style="border: 0.5px solid #334155; margin: 15px 0;">
                 <p style="font-size: 0.7rem; color: var(--text-muted);">Forgot PIN?</p>
-                <form action="/request_pin_reset" method="POST">
+                <form action="{{ url_for('request_pin_reset') }}" method="POST">
                     <button type="submit"
                         style="background: transparent; font-size: 11px; color: var(--accent-blue); border: 1px solid var(--accent-blue); padding: 5px; cursor: pointer;">
                         Request Email Token
                     </button>
                 </form>
 
-                <form action="/verify_pin_reset" method="POST" style="margin-top: 10px;">
+                <form action="{{ url_for('verify_pin_reset') }}" method="POST" style="margin-top: 10px;">
                     <input type="text" name="token" placeholder="Paste Token from Email" required
                         style="font-size: 12px; padding: 8px;">
                     <input type="password" name="new_pin" placeholder="New 4-Digit PIN" required
@@ -73,7 +73,7 @@
                 {% else %}
                 <p>Status: <strong>EMPTY</strong></p>
                 <p style="font-size: 0.8rem;">Used your buffer. Save more?</p>
-                <form action="/add_emergency" method="POST">
+                <form action="{{ url_for('add_emergency') }}" method="POST">
                     <input type="number" name="amount" placeholder="Amount to Lock" required>
                     <button type="submit" style="background: var(--accent-blue);">Add New Buffer</button>
                 </form>
@@ -92,7 +92,7 @@
                         Share Streak on WhatsApp 📱
                     </a>
 
-                    <a href="/leaderboard"
+                    <a href="{{ url_for('leaderboard') }}"
                         style="color: var(--accent-blue); font-size: 0.8rem; text-decoration: none; text-align: center;">
                         View Campus Leaderboard 🏆
                     </a>
@@ -101,7 +101,7 @@
 
             <div class="card full">
                 <h3>Log Spending</h3>
-                <form action="/spend" method="POST">
+                <form action="{{ url_for('spend') }}" method="POST">
                     <input type="number" name="amount" step="0.01" placeholder="Enter amount" required>
                     <button type="submit">Spend</button>
                 </form>
@@ -144,7 +144,7 @@
                 <h3>Danger Zone</h3>
                 <p style="font-size: 0.8rem; color: var(--text-muted);">Completely broken your budget? Start a fresh
                     plan here.</p>
-                <form action="/reset_plan" method="POST"
+                <form action="{{ url_for('reset_plan') }}" method="POST"
                     onsubmit="return confirm('Comrade, are you sure? This wipes your streak and balances!');">
                     <button type="submit"
                         style="background: transparent; color: var(--accent-red); border: 1px solid var(--accent-red); padding: 10px; border-radius: 8px; cursor: pointer; width: 100%;">Reset
@@ -156,7 +156,7 @@
                 <h3>Start New Plan / Top-up</h3>
                 <p style="font-size: 0.8rem; color: var(--text-muted);">Ready for the next month? Enter your allowance
                     details below.</p>
-                <form action="/topup" method="POST">
+                <form action="{{ url_for('topup') }}" method="POST">
                     <input type="number" name="money" placeholder="New Allowance Amount (KES)" required>
                     <input type="number" name="days" placeholder="Days to Survive" required>
 
@@ -170,7 +170,7 @@
 
         <br>
         <div style="text-align: center;">
-            <a href="/logout" style="color: var(--text-muted); text-decoration: none;">Logout</a>
+            <a href="{{ url_for('logout') }}" style="color: var(--text-muted); text-decoration: none;">Logout</a>
         </div>
     </div>
 </body>
