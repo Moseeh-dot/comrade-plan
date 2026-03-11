@@ -172,7 +172,8 @@ def dashboard():
     if 'student_id' not in session: return redirect("/")
     conn, cur = None, None
     try:
-        conn = get_db(); cur = conn.cursor(cursor_factory=RealDictCursor)
+        conn = get_db()
+        cur = conn.cursor(cursor_factory=RealDictCursor)
         cur.execute("SELECT * FROM students WHERE id=%s", (session['student_id'],))
         s = cur.fetchone()
         
@@ -184,14 +185,43 @@ def dashboard():
                 days_in_plan = GREATEST(0, days_in_plan - 1), 
                 streak = streak + 1, last_day = %s WHERE id = %s""", 
                 (release, release, date.today().isoformat(), s['id']))
-            conn.commit(); cur.execute("SELECT * FROM students WHERE id=%s", (s['id'],)); s = cur.fetchone()
+            conn.commit()
+            cur.execute("SELECT * FROM students WHERE id=%s", (s['id'],))
+            s = cur.fetchone()
         
-        cur.execute("SELECT SUM(amount) as total FROM spending WHERE student_id=%s AND date=%s", (s['id'], date.today().isoformat()))
+        # Fetch Total Spent Today
+        cur.execute("SELECT SUM(amount) as total FROM spending WHERE student_id=%s AND date=%s", 
+                    (s['id'], date.today().isoformat()))
         spent = cur.fetchone()["total"] or 0.0
-        data = {"usable": round(s["usable_balance"], 2), "sealed": round(s["sealed_balance"], 2), "emergency": round(s["emergency_fund"], 2), "daily_limit": round(s["daily_rate"], 2), "spent_today": round(spent, 2), "days_left": s["days_in_plan"], "streak": s["streak"]}
-        return render_template("dashboard.html", data=data)
+        
+        # NEW: Fetch Recent Spending History for the table
+        cur.execute("SELECT date, amount FROM spending WHERE student_id=%s ORDER BY date DESC LIMIT 5", 
+                    (s['id'],))
+        history = cur.fetchall()
+
+        # NEW: Logic for the 'Badge'
+        if s['streak'] >= 30: user_badge = "Legend"
+        elif s['streak'] >= 7: user_badge = "Survivor"
+        else: user_badge = "Freshman"
+
+        data = {
+            "usable": round(s["usable_balance"], 2), 
+            "sealed": round(s["sealed_balance"], 2), 
+            "emergency": round(s["emergency_fund"], 2), 
+            "daily_limit": round(s["daily_rate"], 2), 
+            "spent_today": round(spent, 2), 
+            "days_left": s["days_in_plan"], 
+            "streak": s["streak"]
+        }
+
+        # ADDED history and badge to the return line
+        return render_template("dashboard.html", data=data, history=history, badge=user_badge)
+    
+    except Exception as e:
+        print(f"ERROR: {e}") # This will show the real error in Render logs
+        return f"Database Error: {e}", 500
     finally:
-        if cur: cur.close(); 
+        if cur: cur.close()
         if conn: conn.close()
 
 @app.route("/spend", methods=["POST"])
