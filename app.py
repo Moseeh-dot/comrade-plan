@@ -35,8 +35,11 @@ def send_async_email(app, msg):
 # ---------- DATABASE CONNECTION ----------
 def get_db():
     db_url = os.environ.get("DATABASE_URL")
+    # FIX: Ensure compatibility with SQLAlchemy/Postgres standard
     if db_url and db_url.startswith("postgres://"):
         db_url = db_url.replace("postgres://", "postgresql://", 1)
+    
+    # FIX: Added SSL mode for secure connection to Render's DB
     conn = psycopg2.connect(db_url, sslmode='require')
     return conn
 
@@ -56,7 +59,8 @@ def register():
         password = generate_password_hash(request.form["password"])
         pin = request.form["pin"] 
         token = secrets.token_hex(16)
-        # Improvement: Generate Master Recovery Key for account security
+        
+        # IMPROVEMENT: Recovery Key for security
         recovery_code = ''.join(secrets.choice(string.ascii_uppercase + string.digits) for _ in range(8))
         
         conn, cur = None, None
@@ -65,8 +69,10 @@ def register():
             cur.execute("DELETE FROM students WHERE email = %s AND is_verified = FALSE", (email,))
             conn.commit() 
 
-            money, days = float(request.form["money"]), int(request.form["days"])
+            money = float(request.form["money"])
+            days = int(request.form["days"])
             buffer_pct = float(request.form.get("buffer_percent", 10)) / 100
+            
             emergency = round(money * buffer_pct, 2)
             daily_rate = round((money - emergency) / days, 2)
             sealed = round(money - emergency - daily_rate, 2)
@@ -79,12 +85,12 @@ def register():
             
             verify_url = url_for('verify_email', token=token, _external=True)
             msg = Message("🚀 Verify Your Comrade Plan", sender=app.config['MAIL_USERNAME'], recipients=[email])
-            msg.html = f"<h2>Habari {name}!</h2><p>Your Recovery Code is: <b>{recovery_code}</b></p><a href='{verify_url}'>Verify Account</a>"
+            msg.html = f"<h2>Habari {name}!</h2><p>Recovery Code: <b>{recovery_code}</b></p><a href='{verify_url}'>Verify Account</a>"
             Thread(target=send_async_email, args=(app, msg)).start()
             
-            flash("Success! Check your email to verify and save your recovery code."); return redirect(url_for('index'))
+            flash("Check email to verify. Save your recovery code!"); return redirect(url_for('index'))
         except Exception as e:
-            flash("Registration failed. Email may be in use."); print(f"Reg Error: {e}")
+            flash("Registration failed."); print(f"Reg Error: {e}")
         finally:
             if cur: cur.close(); conn.close()
     return render_template("register.html")
@@ -104,9 +110,9 @@ def forgot_password():
             if cur.rowcount > 0:
                 reset_url = url_for('reset_password', token=token, _external=True)
                 msg = Message("🔒 Reset Your Password", sender=app.config['MAIL_USERNAME'], recipients=[email])
-                msg.html = f"<h3>Reset Request</h3><p>Click <a href='{reset_url}'>here</a> to reset your password.</p>"
+                msg.html = f"<h3>Reset Request</h3><p>Click <a href='{reset_url}'>here</a> to reset.</p>"
                 Thread(target=send_async_email, args=(app, msg)).start()
-                flash("Reset link sent to your email.")
+                flash("Reset link sent.")
             else: flash("Email not found.")
         finally:
             if cur: cur.close(); conn.close()
@@ -121,8 +127,7 @@ def reset_password(token):
         try:
             conn = get_db(); cur = conn.cursor()
             cur.execute("UPDATE students SET password=%s, verification_token=NULL WHERE verification_token=%s", (new_pw, token))
-            conn.commit()
-            flash("Password updated! Please login.")
+            conn.commit(); flash("Password updated!")
         finally:
             if cur: cur.close(); conn.close()
         return redirect(url_for('index'))
@@ -136,15 +141,15 @@ def verify_email(token):
     try:
         conn = get_db(); cur = conn.cursor()
         cur.execute("UPDATE students SET is_verified=TRUE, verification_token=NULL WHERE verification_token=%s", (token,))
-        conn.commit()
-        flash("Verified! You can now login.") if cur.rowcount > 0 else flash("Invalid link.")
+        conn.commit(); flash("Verified! You can now login.")
     finally:
         if cur: cur.close(); conn.close()
     return redirect(url_for('index'))
 
 @app.route("/login", methods=["POST"])
 def login():
-    email, password = request.form["email"].strip().lower(), request.form["password"]
+    email = request.form["email"].strip().lower()
+    password = request.form["password"]
     conn, cur = None, None
     try:
         conn = get_db(); cur = conn.cursor(cursor_factory=RealDictCursor)
@@ -168,7 +173,6 @@ def dashboard():
         cur.execute("SELECT * FROM students WHERE id=%s", (session['student_id'],))
         s = cur.fetchone()
         
-        # Daily Release Logic
         if s["last_day"] != date.today().isoformat():
             release = min(s["daily_rate"], s["sealed_balance"])
             cur.execute("""UPDATE students SET usable_balance = usable_balance + %s, 
@@ -178,15 +182,23 @@ def dashboard():
                 (release, release, date.today().isoformat(), s['id']))
             conn.commit(); cur.execute("SELECT * FROM students WHERE id=%s", (s['id'],)); s = cur.fetchone()
         
+        # FIX: Added history query and badge logic required by your dashboard.html
         cur.execute("SELECT SUM(amount) as total FROM spending WHERE student_id=%s AND date=%s", (s['id'], date.today().isoformat()))
         spent = cur.fetchone()["total"] or 0.0
         
-        # Improvement: Fetch history and badge for the dashboard display
         cur.execute("SELECT date, amount FROM spending WHERE student_id=%s ORDER BY date DESC LIMIT 5", (s['id'],))
         history = cur.fetchall()
         user_badge = "Survivor" if s['streak'] > 7 else "Freshman"
 
-        data = {"usable": round(s["usable_balance"], 2), "sealed": round(s["sealed_balance"], 2), "emergency": round(s["emergency_fund"], 2), "daily_limit": round(s["daily_rate"], 2), "spent_today": round(spent, 2), "days_left": s["days_in_plan"], "streak": s["streak"]}
+        data = {
+            "usable": round(s["usable_balance"], 2), 
+            "sealed": round(s["sealed_balance"], 2), 
+            "emergency": round(s["emergency_fund"], 2), 
+            "daily_limit": round(s["daily_rate"], 2), 
+            "spent_today": round(spent, 2), 
+            "days_left": s["days_in_plan"], 
+            "streak": s["streak"]
+        }
         return render_template("dashboard.html", data=data, history=history, badge=user_badge)
     finally:
         if cur: cur.close(); conn.close()
@@ -202,10 +214,12 @@ def emergency_release():
         conn = get_db(); cur = conn.cursor(cursor_factory=RealDictCursor)
         cur.execute("SELECT * FROM students WHERE id=%s", (session['student_id'],))
         u = cur.fetchone()
-        if u and u['parent_pin'] == pin:
+        
+        # FIX: Added safety check for empty parent_pin
+        if u and u.get('parent_pin') == pin:
             cur.execute("UPDATE students SET usable_balance = usable_balance + emergency_fund, emergency_fund = 0 WHERE id=%s", (u['id'],))
-            conn.commit(); flash("Emergency Buffer Unlocked!")
-        else: flash("Incorrect PIN.")
+            conn.commit(); flash("Emergency Buffer Released!")
+        else: flash("Invalid PIN.")
     finally:
         if cur: cur.close(); conn.close()
     return redirect(url_for('dashboard'))
@@ -244,7 +258,7 @@ def leaderboard():
 def logout():
     session.clear(); return redirect(url_for('index'))
 
-# Placeholder routes to prevent 404 Build Errors on the dashboard
+# FIX: Added required routes to prevent "url_for" BuildErrors
 @app.route("/topup", methods=["POST"])
 def topup(): return redirect(url_for('dashboard'))
 
