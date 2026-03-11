@@ -56,8 +56,7 @@ def register():
         password = generate_password_hash(request.form["password"])
         pin = request.form["pin"] 
         token = secrets.token_hex(16)
-        
-        # IMPROVEMENT: Recovery Code Generation
+        # Improvement: Generate Master Recovery Key for account security
         recovery_code = ''.join(secrets.choice(string.ascii_uppercase + string.digits) for _ in range(8))
         
         conn, cur = None, None
@@ -80,12 +79,12 @@ def register():
             
             verify_url = url_for('verify_email', token=token, _external=True)
             msg = Message("🚀 Verify Your Comrade Plan", sender=app.config['MAIL_USERNAME'], recipients=[email])
-            msg.html = f"<h2>Habari {name}!</h2><p>Recovery Code: <b>{recovery_code}</b></p><a href='{verify_url}'>Verify Account</a>"
+            msg.html = f"<h2>Habari {name}!</h2><p>Your Recovery Code is: <b>{recovery_code}</b></p><a href='{verify_url}'>Verify Account</a>"
             Thread(target=send_async_email, args=(app, msg)).start()
             
-            flash("Check email to verify. Save your Recovery Code!"); return redirect(url_for('index'))
+            flash("Success! Check your email to verify and save your recovery code."); return redirect(url_for('index'))
         except Exception as e:
-            flash("Registration failed."); print(f"Reg Error: {e}")
+            flash("Registration failed. Email may be in use."); print(f"Reg Error: {e}")
         finally:
             if cur: cur.close(); conn.close()
     return render_template("register.html")
@@ -105,11 +104,10 @@ def forgot_password():
             if cur.rowcount > 0:
                 reset_url = url_for('reset_password', token=token, _external=True)
                 msg = Message("🔒 Reset Your Password", sender=app.config['MAIL_USERNAME'], recipients=[email])
-                msg.html = f"<h3>Reset Request</h3><p>Click <a href='{reset_url}'>here</a> to reset.</p>"
+                msg.html = f"<h3>Reset Request</h3><p>Click <a href='{reset_url}'>here</a> to reset your password.</p>"
                 Thread(target=send_async_email, args=(app, msg)).start()
                 flash("Reset link sent to your email.")
-            else:
-                flash("Email not found.")
+            else: flash("Email not found.")
         finally:
             if cur: cur.close(); conn.close()
         return redirect(url_for('index'))
@@ -180,18 +178,37 @@ def dashboard():
                 (release, release, date.today().isoformat(), s['id']))
             conn.commit(); cur.execute("SELECT * FROM students WHERE id=%s", (s['id'],)); s = cur.fetchone()
         
-        # History & Stats Fetch
         cur.execute("SELECT SUM(amount) as total FROM spending WHERE student_id=%s AND date=%s", (s['id'], date.today().isoformat()))
         spent = cur.fetchone()["total"] or 0.0
         
+        # Improvement: Fetch history and badge for the dashboard display
         cur.execute("SELECT date, amount FROM spending WHERE student_id=%s ORDER BY date DESC LIMIT 5", (s['id'],))
         history = cur.fetchall()
+        user_badge = "Survivor" if s['streak'] > 7 else "Freshman"
 
-        badge = "Survivor" if s['streak'] > 7 else "Freshman"
         data = {"usable": round(s["usable_balance"], 2), "sealed": round(s["sealed_balance"], 2), "emergency": round(s["emergency_fund"], 2), "daily_limit": round(s["daily_rate"], 2), "spent_today": round(spent, 2), "days_left": s["days_in_plan"], "streak": s["streak"]}
-        return render_template("dashboard.html", data=data, history=history, badge=badge)
+        return render_template("dashboard.html", data=data, history=history, badge=user_badge)
     finally:
         if cur: cur.close(); conn.close()
+
+# ---------- DASHBOARD ACTIONS ----------
+
+@app.route("/emergency_release", methods=["POST"])
+def emergency_release():
+    if 'student_id' not in session: return redirect(url_for('index'))
+    pin = request.form.get("pin")
+    conn, cur = None, None
+    try:
+        conn = get_db(); cur = conn.cursor(cursor_factory=RealDictCursor)
+        cur.execute("SELECT * FROM students WHERE id=%s", (session['student_id'],))
+        u = cur.fetchone()
+        if u and u['parent_pin'] == pin:
+            cur.execute("UPDATE students SET usable_balance = usable_balance + emergency_fund, emergency_fund = 0 WHERE id=%s", (u['id'],))
+            conn.commit(); flash("Emergency Buffer Unlocked!")
+        else: flash("Incorrect PIN.")
+    finally:
+        if cur: cur.close(); conn.close()
+    return redirect(url_for('dashboard'))
 
 @app.route("/spend", methods=["POST"])
 def spend():
@@ -206,27 +223,7 @@ def spend():
             cur.execute("UPDATE students SET usable_balance = usable_balance - %s WHERE id=%s", (amt, session['student_id']))
             cur.execute("INSERT INTO spending (student_id, date, amount) VALUES (%s, %s, %s)", (session['student_id'], date.today().isoformat(), amt))
             conn.commit()
-        else:
-            flash("Insufficient funds for today!")
-    finally:
-        if cur: cur.close(); conn.close()
-    return redirect(url_for('dashboard'))
-
-# ---------- MISSING DASHBOARD LINKS ----------
-
-@app.route("/emergency_release", methods=["POST"])
-def emergency_release():
-    if 'student_id' not in session: return redirect(url_for('index'))
-    pin = request.form.get("pin")
-    conn, cur = None, None
-    try:
-        conn = get_db(); cur = conn.cursor(cursor_factory=RealDictCursor)
-        cur.execute("SELECT * FROM students WHERE id=%s", (session['student_id'],))
-        u = cur.fetchone()
-        if u['parent_pin'] == pin:
-            cur.execute("UPDATE students SET usable_balance = usable_balance + emergency_fund, emergency_fund = 0 WHERE id=%s", (u['id'],))
-            conn.commit(); flash("Buffer Released!")
-        else: flash("Invalid PIN.")
+        else: flash("Insufficient funds!")
     finally:
         if cur: cur.close(); conn.close()
     return redirect(url_for('dashboard'))
@@ -247,7 +244,7 @@ def leaderboard():
 def logout():
     session.clear(); return redirect(url_for('index'))
 
-# Stubs for missing functionality
+# Placeholder routes to prevent 404 Build Errors on the dashboard
 @app.route("/topup", methods=["POST"])
 def topup(): return redirect(url_for('dashboard'))
 
