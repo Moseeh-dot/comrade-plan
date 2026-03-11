@@ -18,7 +18,7 @@ app.config.update(
     MAIL_SERVER='smtp.gmail.com',
     MAIL_PORT=587,
     MAIL_USE_TLS=True,
-    MAIL_USE_SSL=False, 
+    MAIL_USE_SSL=False,
     MAIL_USERNAME=os.environ.get("MAIL_USER"),
     MAIL_PASSWORD=os.environ.get("MAIL_PASS"),
 )
@@ -56,7 +56,8 @@ def register():
         password = generate_password_hash(request.form["password"])
         pin = request.form["pin"] 
         token = secrets.token_hex(16)
-        # Generate Master Recovery Key
+        
+        # IMPROVEMENT: Recovery Code Generation
         recovery_code = ''.join(secrets.choice(string.ascii_uppercase + string.digits) for _ in range(8))
         
         conn, cur = None, None
@@ -82,7 +83,7 @@ def register():
             msg.html = f"<h2>Habari {name}!</h2><p>Recovery Code: <b>{recovery_code}</b></p><a href='{verify_url}'>Verify Account</a>"
             Thread(target=send_async_email, args=(app, msg)).start()
             
-            flash("Check email to verify. Save your Recovery Code!"); return redirect("/")
+            flash("Check email to verify. Save your Recovery Code!"); return redirect(url_for('index'))
         except Exception as e:
             flash("Registration failed."); print(f"Reg Error: {e}")
         finally:
@@ -106,11 +107,12 @@ def forgot_password():
                 msg = Message("🔒 Reset Your Password", sender=app.config['MAIL_USERNAME'], recipients=[email])
                 msg.html = f"<h3>Reset Request</h3><p>Click <a href='{reset_url}'>here</a> to reset.</p>"
                 Thread(target=send_async_email, args=(app, msg)).start()
-                flash("Reset link sent.")
-            else: flash("Email not found.")
+                flash("Reset link sent to your email.")
+            else:
+                flash("Email not found.")
         finally:
             if cur: cur.close(); conn.close()
-        return redirect("/")
+        return redirect(url_for('index'))
     return render_template("reset_password.html")
 
 @app.route("/reset_password/<token>", methods=["GET", "POST"])
@@ -121,13 +123,43 @@ def reset_password(token):
         try:
             conn = get_db(); cur = conn.cursor()
             cur.execute("UPDATE students SET password=%s, verification_token=NULL WHERE verification_token=%s", (new_pw, token))
-            conn.commit(); flash("Password updated!")
+            conn.commit()
+            flash("Password updated! Please login.")
         finally:
             if cur: cur.close(); conn.close()
-        return redirect("/")
+        return redirect(url_for('index'))
     return render_template("reset_password.html", token=token)
 
 # ---------- DASHBOARD & CORE LOGIC ----------
+
+@app.route("/verify/<token>")
+def verify_email(token):
+    conn, cur = None, None
+    try:
+        conn = get_db(); cur = conn.cursor()
+        cur.execute("UPDATE students SET is_verified=TRUE, verification_token=NULL WHERE verification_token=%s", (token,))
+        conn.commit()
+        flash("Verified! You can now login.") if cur.rowcount > 0 else flash("Invalid link.")
+    finally:
+        if cur: cur.close(); conn.close()
+    return redirect(url_for('index'))
+
+@app.route("/login", methods=["POST"])
+def login():
+    email, password = request.form["email"].strip().lower(), request.form["password"]
+    conn, cur = None, None
+    try:
+        conn = get_db(); cur = conn.cursor(cursor_factory=RealDictCursor)
+        cur.execute("SELECT * FROM students WHERE email=%s", (email,))
+        user = cur.fetchone()
+        if user and check_password_hash(user["password"], password):
+            if not user['is_verified']: flash("Please verify your email."); return redirect(url_for('index'))
+            session['student_id'] = user["id"]
+            return redirect(url_for('dashboard'))
+        flash("Invalid credentials.")
+    finally:
+        if cur: cur.close(); conn.close()
+    return redirect(url_for('index'))
 
 @app.route("/dashboard")
 def dashboard():
@@ -138,6 +170,7 @@ def dashboard():
         cur.execute("SELECT * FROM students WHERE id=%s", (session['student_id'],))
         s = cur.fetchone()
         
+        # Daily Release Logic
         if s["last_day"] != date.today().isoformat():
             release = min(s["daily_rate"], s["sealed_balance"])
             cur.execute("""UPDATE students SET usable_balance = usable_balance + %s, 
@@ -147,6 +180,7 @@ def dashboard():
                 (release, release, date.today().isoformat(), s['id']))
             conn.commit(); cur.execute("SELECT * FROM students WHERE id=%s", (s['id'],)); s = cur.fetchone()
         
+        # History & Stats Fetch
         cur.execute("SELECT SUM(amount) as total FROM spending WHERE student_id=%s AND date=%s", (s['id'], date.today().isoformat()))
         spent = cur.fetchone()["total"] or 0.0
         
@@ -159,6 +193,27 @@ def dashboard():
     finally:
         if cur: cur.close(); conn.close()
 
+@app.route("/spend", methods=["POST"])
+def spend():
+    if 'student_id' not in session: return redirect(url_for('index'))
+    amt = float(request.form["amount"])
+    conn, cur = None, None
+    try:
+        conn = get_db(); cur = conn.cursor(cursor_factory=RealDictCursor)
+        cur.execute("SELECT usable_balance FROM students WHERE id=%s", (session['student_id'],))
+        balance = cur.fetchone()["usable_balance"]
+        if amt <= balance:
+            cur.execute("UPDATE students SET usable_balance = usable_balance - %s WHERE id=%s", (amt, session['student_id']))
+            cur.execute("INSERT INTO spending (student_id, date, amount) VALUES (%s, %s, %s)", (session['student_id'], date.today().isoformat(), amt))
+            conn.commit()
+        else:
+            flash("Insufficient funds for today!")
+    finally:
+        if cur: cur.close(); conn.close()
+    return redirect(url_for('dashboard'))
+
+# ---------- MISSING DASHBOARD LINKS ----------
+
 @app.route("/emergency_release", methods=["POST"])
 def emergency_release():
     if 'student_id' not in session: return redirect(url_for('index'))
@@ -170,25 +225,8 @@ def emergency_release():
         u = cur.fetchone()
         if u['parent_pin'] == pin:
             cur.execute("UPDATE students SET usable_balance = usable_balance + emergency_fund, emergency_fund = 0 WHERE id=%s", (u['id'],))
-            conn.commit(); flash("Emergency Buffer Released!")
+            conn.commit(); flash("Buffer Released!")
         else: flash("Invalid PIN.")
-    finally:
-        if cur: cur.close(); conn.close()
-    return redirect(url_for('dashboard'))
-
-@app.route("/spend", methods=["POST"])
-def spend():
-    if 'student_id' not in session: return redirect(url_for('index'))
-    amt = float(request.form["amount"])
-    conn, cur = None, None
-    try:
-        conn = get_db(); cur = conn.cursor(cursor_factory=RealDictCursor)
-        cur.execute("SELECT usable_balance FROM students WHERE id=%s", (session['student_id'],))
-        if amt <= cur.fetchone()["usable_balance"]:
-            cur.execute("UPDATE students SET usable_balance = usable_balance - %s WHERE id=%s", (amt, session['student_id']))
-            cur.execute("INSERT INTO spending (student_id, date, amount) VALUES (%s, %s, %s)", (session['student_id'], date.today().isoformat(), amt))
-            conn.commit()
-        else: flash("Insufficient funds!")
     finally:
         if cur: cur.close(); conn.close()
     return redirect(url_for('dashboard'))
@@ -205,35 +243,22 @@ def leaderboard():
     finally:
         if cur: cur.close(); conn.close()
 
-# ---------- SYSTEM ROUTES ----------
-
-@app.route("/verify/<token>")
-def verify_email(token):
-    conn, cur = None, None
-    try:
-        conn = get_db(); cur = conn.cursor()
-        cur.execute("UPDATE students SET is_verified=TRUE, verification_token=NULL WHERE verification_token=%s", (token,))
-        conn.commit(); flash("Verified! Please login.")
-    finally:
-        if cur: cur.close(); conn.close()
-    return redirect(url_for('index'))
-
 @app.route("/logout")
 def logout():
     session.clear(); return redirect(url_for('index'))
 
-# STUBS: Prevent BuildError until full logic is pasted
+# Stubs for missing functionality
 @app.route("/topup", methods=["POST"])
-def topup(): flash("Top-up coming soon!"); return redirect(url_for('dashboard'))
+def topup(): return redirect(url_for('dashboard'))
 
 @app.route("/reset_plan", methods=["POST"])
-def reset_plan(): flash("Reset coming soon!"); return redirect(url_for('dashboard'))
+def reset_plan(): return redirect(url_for('dashboard'))
 
 @app.route("/request_pin_reset", methods=["POST"])
-def request_pin_reset(): flash("Email token sent!"); return redirect(url_for('dashboard'))
+def request_pin_reset(): return redirect(url_for('dashboard'))
 
 @app.route("/verify_pin_reset", methods=["POST"])
-def verify_pin_reset(): flash("PIN updated!"); return redirect(url_for('dashboard'))
+def verify_pin_reset(): return redirect(url_for('dashboard'))
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=10000)
