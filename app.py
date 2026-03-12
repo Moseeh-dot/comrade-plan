@@ -365,13 +365,88 @@ def logout():
 
 # Adding missing form endpoints to prevent HTML BuildErrors
 @app.route("/add_emergency", methods=["POST"])
-def add_emergency(): return redirect(url_for('dashboard'))
+def add_emergency():
+    if 'student_id' not in session: 
+        return redirect(url_for('index'))
+    try:
+        amt = float(request.form["amount"])
+        conn = get_db()
+        cur = conn.cursor(cursor_factory=RealDictCursor)
+        
+        # Check if they actually have enough usable cash to lock away
+        cur.execute("SELECT usable_balance FROM students WHERE id=%s", (session['student_id'],))
+        balance = cur.fetchone()["usable_balance"]
+        
+        if amt <= balance:
+            cur.execute("UPDATE students SET usable_balance = usable_balance - %s, emergency_fund = emergency_fund + %s WHERE id=%s", (amt, amt, session['student_id']))
+            conn.commit()
+            flash(f"Successfully locked KES {amt} into emergency buffer!")
+        else:
+            flash("You don't have enough usable cash to lock that amount.")
+    except Exception as e:
+        print(f"Add Emergency Error: {e}")
+        flash("Error adding to emergency buffer. Please enter a valid number.")
+    finally:
+        if 'conn' in locals() and conn: conn.close()
+    return redirect(url_for('dashboard'))
 
 @app.route("/topup", methods=["POST"])
-def topup(): return redirect(url_for('dashboard'))
+def topup():
+    if 'student_id' not in session: 
+        return redirect(url_for('index'))
+    try:
+        money = float(request.form["money"])
+        days = int(request.form["days"])
+        buffer_pct = float(request.form.get("buffer_percent", 10)) / 100
+        
+        # Calculate the new metrics based on the incoming allowance
+        new_emergency = round(money * buffer_pct, 2)
+        new_daily_rate = round((money - new_emergency) / days, 2)
+        new_sealed = round(money - new_emergency - new_daily_rate, 2)
+        
+        conn = get_db()
+        cur = conn.cursor()
+        
+        # Add the new funds to whatever balance they already have
+        cur.execute("""UPDATE students 
+                       SET usable_balance = usable_balance + %s,
+                           sealed_balance = sealed_balance + %s,
+                           emergency_fund = emergency_fund + %s,
+                           daily_rate = %s,
+                           days_in_plan = %s,
+                           last_day = %s
+                       WHERE id = %s""",
+                    (new_daily_rate, new_sealed, new_emergency, new_daily_rate, days, date.today().isoformat(), session['student_id']))
+        conn.commit()
+        flash("New cycle started successfully! Funds have been added.")
+    except Exception as e:
+        print(f"Topup Error: {e}")
+        flash("Failed to start new cycle. Check your inputs.")
+    finally:
+        if 'conn' in locals() and conn: conn.close()
+    return redirect(url_for('dashboard'))
 
 @app.route("/reset_plan", methods=["POST"])
-def reset_plan(): return redirect(url_for('dashboard'))
+def reset_plan():
+    if 'student_id' not in session: 
+        return redirect(url_for('index'))
+    try:
+        conn = get_db()
+        cur = conn.cursor()
+        
+        # Wipe all financial balances and the streak
+        cur.execute("""UPDATE students 
+                       SET usable_balance = 0, sealed_balance = 0, emergency_fund = 0, 
+                           daily_rate = 0, days_in_plan = 0, streak = 0 
+                       WHERE id = %s""", (session['student_id'],))
+        conn.commit()
+        flash("Plan completely reset. Start a fresh cycle below.")
+    except Exception as e:
+        print(f"Reset Error: {e}")
+        flash("Error resetting plan.")
+    finally:
+        if 'conn' in locals() and conn: conn.close()
+    return redirect(url_for('dashboard'))
 
 @app.route("/request_pin_reset", methods=["POST"])
 def request_pin_reset(): return redirect(url_for('dashboard'))
