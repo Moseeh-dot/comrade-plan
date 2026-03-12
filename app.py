@@ -30,18 +30,72 @@ def send_async_email(app, msg):
     with app.app_context():
         try:
             mail.send(msg)
+            print("INFO: Background email sent successfully.")
         except Exception as e:
             print(f"CRITICAL Mail Error: {e}")
 
 # ---------- DATABASE CONNECTION ----------
 def get_db():
     db_url = os.environ.get("DATABASE_URL")
-    if db_url and db_url.startswith("postgres://"):
+    if not db_url:
+        raise ValueError("DATABASE_URL is missing from Render Environment Variables.")
+    
+    if db_url.startswith("postgres://"):
         db_url = db_url.replace("postgres://", "postgresql://", 1)
     
-    # FIX: Added connect_timeout to prevent the app from hanging silently
-    conn = psycopg2.connect(db_url, sslmode='require', connect_timeout=5)
-    return conn
+    # connect_timeout prevents the app from hanging silently
+    return psycopg2.connect(db_url, sslmode='require', connect_timeout=5)
+
+# ---------- AUTO-INITIALIZE DATABASE ----------
+@app.before_request
+def setup_database():
+    """Automatically creates the required tables on the very first visit."""
+    if request.endpoint == 'static': 
+        return
+        
+    if not getattr(app, '_db_init_done', False):
+        conn = None
+        try:
+            conn = get_db()
+            cur = conn.cursor()
+            
+            # 1. Create Students Table
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS students (
+                    id SERIAL PRIMARY KEY,
+                    name VARCHAR(100),
+                    email VARCHAR(100) UNIQUE NOT NULL,
+                    password VARCHAR(255) NOT NULL,
+                    parent_pin VARCHAR(10),
+                    usable_balance FLOAT DEFAULT 0,
+                    sealed_balance FLOAT DEFAULT 0,
+                    emergency_fund FLOAT DEFAULT 0,
+                    daily_rate FLOAT DEFAULT 0,
+                    days_in_plan INTEGER,
+                    streak INTEGER DEFAULT 0,
+                    last_day VARCHAR(20),
+                    is_verified BOOLEAN DEFAULT FALSE,
+                    verification_token VARCHAR(255),
+                    recovery_code VARCHAR(20)
+                );
+            """)
+            
+            # 2. Create Spending Table
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS spending (
+                    id SERIAL PRIMARY KEY,
+                    student_id INTEGER REFERENCES students(id),
+                    amount FLOAT NOT NULL,
+                    date VARCHAR(20) NOT NULL
+                );
+            """)
+            conn.commit()
+            app._db_init_done = True
+            print("INFO: Database tables verified/created successfully.")
+        except Exception as e:
+            print(f"CRITICAL DB SETUP ERROR: {e}")
+        finally:
+            if conn: conn.close()
 
 # ---------- AUTHENTICATION & REGISTRATION ----------
 
@@ -50,6 +104,31 @@ def index():
     if 'student_id' in session:
         return redirect(url_for('dashboard'))
     return render_template("index.html")
+
+@app.route("/login", methods=["POST"])
+def login():
+    email = request.form.get("email", "").strip().lower()
+    password = request.form.get("password", "")
+    conn, cur = None, None
+    try:
+        conn = get_db(); cur = conn.cursor(cursor_factory=RealDictCursor)
+        cur.execute("SELECT * FROM students WHERE email=%s", (email,))
+        user = cur.fetchone()
+        
+        if user and check_password_hash(user["password"], password):
+            if not user.get('is_verified', False):
+                flash("Please verify your email first.")
+                return redirect(url_for('index'))
+            session['student_id'] = user["id"]
+            return redirect(url_for('dashboard'))
+        flash("Invalid credentials.")
+    except Exception as e:
+        print(f"Login Error: {e}")
+        flash("Login service temporarily unavailable.")
+    finally:
+        if cur: cur.close()
+        if conn: conn.close()
+    return redirect(url_for('index'))
 
 @app.route("/register", methods=["GET", "POST"])
 def register():
@@ -60,13 +139,12 @@ def register():
             password = generate_password_hash(request.form["password"])
             pin = request.form["pin"] 
             token = secrets.token_hex(16)
-            # Master Recovery Key for account security
             recovery_code = ''.join(secrets.choice(string.ascii_uppercase + string.digits) for _ in range(8))
             
             conn, cur = None, None
             try:
                 conn = get_db(); cur = conn.cursor()
-                # Startup Cleanup Logic
+                # Clean up old unverified attempts
                 cur.execute("DELETE FROM students WHERE email = %s AND is_verified = FALSE", (email,))
                 conn.commit() 
 
@@ -84,23 +162,22 @@ def register():
                     (name, email, password, pin, daily_rate, sealed, emergency, daily_rate, days, date.today().isoformat(), token, recovery_code))
                 conn.commit()
                 
-                # FIX: Async Dispatch for Verification Email
                 verify_url = url_for('verify_email', token=token, _external=True)
                 msg = Message("🚀 Verify Your Comrade Plan", sender=app.config['MAIL_USERNAME'], recipients=[email])
-                msg.html = f"<h2>Habari {name}!</h2><p>Recovery Code: <b>{recovery_code}</b></p><a href='{verify_url}'>Verify Account</a>"
+                msg.html = f"<h2>Habari {name}!</h2><p>Recovery Code: <b>{recovery_code}</b></p><a href='{verify_url}' style='padding:10px; background:#10b981; color:white; text-decoration:none; border-radius:5px;'>Verify Account</a>"
                 
                 Thread(target=send_async_email, args=(app, msg)).start()
                 
                 flash("Success! Check your email to verify and save your recovery code.")
                 return redirect(url_for('index'))
             except Exception as e:
-                print(f"Reg Error: {e}")
-                flash("Registration failed. Email may be in use.")
+                print(f"Reg DB Error: {e}")
+                flash("Registration failed. Email may already be in use.")
             finally:
                 if cur: cur.close()
                 if conn: conn.close()
-        except Exception:
-            flash("Please enter valid data.")
+        except ValueError:
+            flash("Please enter valid numbers for money and days.")
             
     return render_template("register.html")
 
@@ -115,7 +192,6 @@ def dashboard():
         cur.execute("SELECT * FROM students WHERE id=%s", (session['student_id'],))
         s = cur.fetchone()
         
-        # Daily Release Logic
         if s["last_day"] != date.today().isoformat():
             release = min(s["daily_rate"], s["sealed_balance"])
             cur.execute("""UPDATE students SET usable_balance = usable_balance + %s, 
@@ -127,13 +203,12 @@ def dashboard():
             cur.execute("SELECT * FROM students WHERE id=%s", (s['id'],))
             s = cur.fetchone()
         
-        # Logic for 'spent', 'history', and 'badge' required by your HTML
         cur.execute("SELECT SUM(amount) as total FROM spending WHERE student_id=%s AND date=%s", (s['id'], date.today().isoformat()))
         spent = cur.fetchone()["total"] or 0.0
         
         cur.execute("SELECT date, amount FROM spending WHERE student_id=%s ORDER BY date DESC LIMIT 5", (s['id'],))
         history = cur.fetchall()
-        user_badge = "Survivor" if s['streak'] > 7 else "Freshman"
+        user_badge = "Survivor" if s["streak"] > 7 else "Freshman"
 
         data = {
             "usable": round(s["usable_balance"], 2), 
@@ -166,10 +241,13 @@ def emergency_release():
         u = cur.fetchone()
         if u and str(u['parent_pin']) == str(pin):
             cur.execute("UPDATE students SET usable_balance = usable_balance + emergency_fund, emergency_fund = 0 WHERE id=%s", (u['id'],))
-            conn.commit(); flash("Emergency Buffer Unlocked!")
-        else: flash("Incorrect PIN.")
+            conn.commit()
+            flash("Emergency Buffer Unlocked!")
+        else: 
+            flash("Incorrect PIN.")
     finally:
-        if cur: cur.close(); conn.close()
+        if cur: cur.close()
+        if conn: conn.close()
     return redirect(url_for('dashboard'))
 
 @app.route("/spend", methods=["POST"])
@@ -186,11 +264,13 @@ def spend():
                 cur.execute("UPDATE students SET usable_balance = usable_balance - %s WHERE id=%s", (amt, session['student_id']))
                 cur.execute("INSERT INTO spending (student_id, date, amount) VALUES (%s, %s, %s)", (session['student_id'], date.today().isoformat(), amt))
                 conn.commit()
-            else: flash("Insufficient funds!")
+            else: 
+                flash("Insufficient funds!")
         finally:
-            if cur: cur.close(); conn.close()
-    except Exception:
-        flash("Invalid amount.")
+            if cur: cur.close()
+            if conn: conn.close()
+    except ValueError:
+        flash("Enter a valid amount.")
     return redirect(url_for('dashboard'))
 
 @app.route("/verify/<token>")
@@ -199,25 +279,48 @@ def verify_email(token):
     try:
         conn = get_db(); cur = conn.cursor()
         cur.execute("UPDATE students SET is_verified=TRUE, verification_token=NULL WHERE verification_token=%s", (token,))
-        conn.commit(); flash("Verified! You can now login.")
+        conn.commit()
+        flash("Verified! You can now login.")
     finally:
-        if cur: cur.close(); conn.close()
+        if cur: cur.close()
+        if conn: conn.close()
     return redirect(url_for('index'))
+
+@app.route("/test_mail")
+def test_mail():
+    try:
+        msg = Message("Comrade Plan Connection Test",
+                      sender=app.config['MAIL_USERNAME'],
+                      recipients=[app.config['MAIL_USERNAME']])
+        msg.body = "If you are reading this, your Gmail App Password and background threading are working perfectly!"
+        mail.send(msg)
+        return "<h1>Success!</h1><p>Test email sent to your Gmail address.</p>"
+    except Exception as e:
+        return f"<h1>Failed!</h1><p>Error details: {str(e)}</p>"
 
 @app.route("/logout")
 def logout():
-    session.clear(); return redirect(url_for('index'))
+    session.clear()
+    return redirect(url_for('index'))
 
-# Stubs for other features to prevent 404s
+# --- STUB ROUTES (To prevent 404s for features you're still building) ---
 @app.route("/leaderboard")
-def leaderboard(): 
-    return "Leaderboard coming soon!"
+def leaderboard(): return "Leaderboard coming soon!"
 
 @app.route("/topup", methods=["POST"])
 def topup(): return redirect(url_for('dashboard'))
 
 @app.route("/reset_plan", methods=["POST"])
 def reset_plan(): return redirect(url_for('dashboard'))
+
+@app.route("/request_pin_reset", methods=["POST"])
+def request_pin_reset(): return redirect(url_for('dashboard'))
+
+@app.route("/verify_pin_reset", methods=["POST"])
+def verify_pin_reset(): return redirect(url_for('dashboard'))
+
+@app.route("/forgot_password", methods=["GET", "POST"])
+def forgot_password(): return render_template("reset_password.html")
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=10000)
