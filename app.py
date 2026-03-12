@@ -447,12 +447,65 @@ def reset_plan():
     finally:
         if 'conn' in locals() and conn: conn.close()
     return redirect(url_for('dashboard'))
+# ---------- PIN RESET LOGIC (OTP FLOW) ----------
 
 @app.route("/request_pin_reset", methods=["POST"])
-def request_pin_reset(): return redirect(url_for('dashboard'))
+def request_pin_reset():
+    if 'student_id' not in session: return redirect(url_for('index'))
+    
+    # Generate a 6-digit One-Time Password (OTP)
+    otp_token = ''.join(secrets.choice(string.digits) for _ in range(6))
+    
+    conn, cur = None, None
+    try:
+        conn = get_db(); cur = conn.cursor(cursor_factory=RealDictCursor)
+        # Save token to db and grab user's email simultaneously
+        cur.execute("UPDATE students SET verification_token=%s WHERE id=%s RETURNING email, name", 
+                    (otp_token, session['student_id']))
+        user = cur.fetchone()
+        conn.commit()
+        
+        if user:
+            msg = Message("🔒 Comrade PIN Reset Code", sender=app.config['MAIL_USERNAME'], recipients=[user['email']])
+            msg.html = f"<h3>Habari {user['name']}!</h3><p>Your PIN reset code is: <b style='font-size: 24px;'>{otp_token}</b></p><p>Copy and paste this into your dashboard to set a new PIN.</p>"
+            Thread(target=send_async_email, args=(app, msg)).start()
+            flash("Reset token sent! Check your university email.")
+        else:
+            flash("Error generating token.")
+    except Exception as e:
+        print(f"PIN Reset Req Error: {e}"); flash("Failed to request PIN reset.")
+    finally:
+        if cur: cur.close()
+        if conn: conn.close()
+    return redirect(url_for('dashboard'))
 
 @app.route("/verify_pin_reset", methods=["POST"])
-def verify_pin_reset(): return redirect(url_for('dashboard'))
+def verify_pin_reset():
+    if 'student_id' not in session: return redirect(url_for('index'))
+    
+    token_submitted = request.form.get("token", "").strip()
+    new_pin = request.form.get("new_pin", "").strip()
+    
+    conn, cur = None, None
+    try:
+        conn = get_db(); cur = conn.cursor(cursor_factory=RealDictCursor)
+        cur.execute("SELECT verification_token FROM students WHERE id=%s", (session['student_id'],))
+        user = cur.fetchone()
+        
+        # Logically verify the token matches and isn't empty
+        if user and user['verification_token'] == token_submitted and token_submitted != "":
+            cur.execute("UPDATE students SET parent_pin=%s, verification_token=NULL WHERE id=%s", 
+                        (new_pin, session['student_id']))
+            conn.commit(); flash("Success! Your Emergency PIN has been updated.")
+        else:
+            flash("Invalid token. Please request a new one.")
+    except Exception as e:
+        print(f"PIN Verification Error: {e}"); flash("Error updating PIN.")
+    finally:
+        if cur: cur.close()
+        if conn: conn.close()
+    return redirect(url_for('dashboard'))
+
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=10000)
