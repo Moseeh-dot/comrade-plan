@@ -3,8 +3,8 @@ from requests.auth import HTTPBasicAuth
 
 # --- COMTRADE PLAN: DARAJA CREDENTIALS ---
 # Keep these safe! Never commit the real production keys to GitHub later.
-CONSUMER_KEY = "PASTE_YOUR_CONSUMER_KEY_HERE"
-CONSUMER_SECRET = "PASTE_YOUR_CONSUMER_SECRET_HERE"
+CONSUMER_KEY = "wr3aTUAOQWFCLrbEkuyvYDZydoQCxbGxzqrEMOQIn6fxr04f"
+CONSUMER_SECRET = "2sYAzSRdl0wmZc6T3swMuY1xnE7Z6unNZEDsYEa0tKq0TKa9SdBW2iPyJPKucl6Y"
 
 def get_access_token():
     """
