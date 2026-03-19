@@ -11,7 +11,7 @@ from threading import Thread
 from datetime import timedelta
 import io
 import csv
-
+from flask import Flask, render_template, request, redirect, session, jsonify
 
 app = Flask(__name__)
 app.secret_key = os.environ.get("SECRET_KEY", "comrade_secure_key_2026")
@@ -558,5 +558,66 @@ def secure_ledger_backup(secret_token):
         if cur: cur.close()
         if conn: conn.close()
 
+# ---------- M-PESA AUTOMATED ACCOUNTING WEBHOOK ----------
+
+@app.route('/api/mpesa_callback', methods=['POST'])
+def mpesa_callback():
+    # 1. Catch the raw JSON envelope from Safaricom
+    mpesa_response = request.get_json()
+    print("--- 📥 NEW M-PESA RECEIPT RECEIVED ---")
+    print(mpesa_response) # Logs the raw receipt to your Render dashboard
+
+    try:
+        # 2. Crack open the envelope
+        callback_data = mpesa_response['Body']['stkCallback']
+        result_code = callback_data['ResultCode']
+        
+        # 3. Logic Check: Did they actually pay? (ResultCode 0 means Success)
+        if result_code == 0:
+            # Dig into the Metadata to extract the exact amount and phone number
+            metadata = callback_data['CallbackMetadata']['Item']
+            
+            amount = 0
+            phone_number = ""
+            receipt_number = ""
+            
+            for item in metadata:
+                if item['Name'] == 'Amount':
+                    amount = item['Value']
+                elif item['Name'] == 'PhoneNumber':
+                    phone_number = str(item['Value']) # Safaricom sends it as 2547...
+                elif item['Name'] == 'MpesaReceiptNumber':
+                    receipt_number = item['Value']
+                    
+            print(f"💰 SUCCESS! Received KES {amount} from {phone_number}. Receipt: {receipt_number}")
+            
+            # 4. Update the Ledger (PostgreSQL)
+            conn = get_db()
+            cur = conn.cursor()
+            
+            # Find the student who owns this phone number and add the money to their vault
+            cur.execute("""
+                UPDATE students 
+                SET usable_balance = usable_balance + %s 
+                WHERE phone = %s
+            """, (amount, phone_number)) 
+            
+            conn.commit()
+            cur.close()
+            conn.close()
+            
+            print("✅ Database updated successfully. The student now has the money.")
+            
+        else:
+            # ResultCode is not 0. They cancelled the prompt, had no money, or typed the wrong PIN.
+            fail_reason = callback_data.get('ResultDesc', 'Unknown Reason')
+            print(f"❌ Transaction Failed or Cancelled. Reason: {fail_reason}")
+
+        # 5. The Handshake Out: Tell Safaricom we received the message so they stop trying to send it
+        return jsonify({"ResultCode": 0, "ResultDesc": "Accepted"}), 200
+
+    except Exception as e:
+        print(f"🚨 CRITICAL WEBHOOK ERROR: {e}")
+        return jsonify({"ResultCode": 1, "ResultDesc": "Server Error"}), 500
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=10000)

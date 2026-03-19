@@ -58,7 +58,7 @@ def trigger_stk_push(phone_number, amount):
     }
 
     try:
-        response = requests.post(api_url, json=payload, headers=headers), timeout=10
+        response = requests.post(api_url, json=payload, headers=headers, timeout=10 )
         print("\n--- SAFARICOM RESPONSE ---")
         print(response.json())
     except Exception as e:
