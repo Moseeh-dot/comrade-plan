@@ -8,9 +8,11 @@ import string
 from datetime import date
 from werkzeug.security import generate_password_hash, check_password_hash
 from threading import Thread
+from datetime import timedelta
 
 app = Flask(__name__)
 app.secret_key = os.environ.get("SECRET_KEY", "comrade_secure_key_2026")
+app.permanent_session_lifetime = timedelta(days=30)
 
 # ---------- MAIL CONFIGURATION ----------
 app.config.update(
@@ -111,6 +113,7 @@ def login():
                 flash("Please verify your email first.")
                 return redirect(url_for('index'))
             session['student_id'] = user["id"]
+            session.permanent = True
             return redirect(url_for('dashboard'))
         flash("Invalid credentials.")
     except Exception as e:
