@@ -9,6 +9,9 @@ from datetime import date
 from werkzeug.security import generate_password_hash, check_password_hash
 from threading import Thread
 from datetime import timedelta
+import io
+import csv
+
 
 app = Flask(__name__)
 app.secret_key = os.environ.get("SECRET_KEY", "comrade_secure_key_2026")
@@ -509,6 +512,51 @@ def verify_pin_reset():
         if conn: conn.close()
     return redirect(url_for('dashboard'))
 
+
+# ---------- AUTOMATED LEDGER BACKUP ----------
+
+@app.route("/secure_ledger_backup/<secret_token>")
+def secure_ledger_backup(secret_token):
+    # 1. The Bouncer: Only allow the backup to run if the exact master token is used
+    MASTER_TOKEN = "comrade_founder_xyz_2026" # Change this to your own random password
+    if secret_token != MASTER_TOKEN:
+        return "Unauthorized Access", 401
+        
+    conn, cur = None, None
+    try:
+        conn = get_db()
+        cur = conn.cursor(cursor_factory=RealDictCursor)
+        
+        # 2. Extract the critical financial data (We don't need passwords, just the money)
+        cur.execute("SELECT id, name, email, usable_balance, sealed_balance, emergency_fund, streak FROM students")
+        students = cur.fetchall()
+        
+        # 3. Convert the data into a CSV spreadsheet in the server's memory
+        si = io.StringIO()
+        # Define the exact columns for your spreadsheet
+        writer = csv.DictWriter(si, fieldnames=["id", "name", "email", "usable_balance", "sealed_balance", "emergency_fund", "streak"])
+        writer.writeheader()
+        writer.writerows(students)
+        
+        # 4. Attach the spreadsheet to an email and send it to yourself
+        msg = Message("📊 Comrade Plan: Daily Ledger Backup", 
+                      sender=app.config['MAIL_USERNAME'], 
+                      recipients=[app.config['MAIL_USERNAME']]) # Sends to your own Gmail
+        
+        msg.body = "Attached is the exact financial state of all Comrade Plan users as of right now. Keep this safe."
+        msg.attach("comrade_ledger_backup.csv", "text/csv", si.getvalue())
+        
+        # Send synchronously here to ensure it actually fires before the server sleeps
+        mail.send(msg) 
+        
+        return "Backup Spreadsheet securely compiled and emailed to founder.", 200
+        
+    except Exception as e:
+        print(f"CRITICAL Backup Error: {e}")
+        return "Backup failed to execute.", 500
+    finally:
+        if cur: cur.close()
+        if conn: conn.close()
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=10000)
