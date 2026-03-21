@@ -1,4 +1,5 @@
 import requests
+from requests.auth import HTTPBasicAuth  # <-- THIS IS THE MISSING PIECE
 import base64
 from datetime import datetime
 import os
