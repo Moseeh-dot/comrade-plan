@@ -12,6 +12,7 @@ from datetime import timedelta
 import io
 import csv
 from flask import Flask, render_template, request, redirect, session, jsonify
+from mpesa import trigger_stk_push, trigger_b2c_payout
 
 app = Flask(__name__)
 app.secret_key = os.environ.get("SECRET_KEY", "comrade_secure_key_2026")
@@ -239,6 +240,66 @@ def dashboard():
         if cur: cur.close()
         if conn: conn.close()
 
+# ---------- M-PESA USER ACTIONS (DASHBOARD) ----------
+
+@app.route('/deposit', methods=['POST'])
+def deposit():
+    if 'email' not in session:
+        return redirect('/login')
+        
+    amount = float(request.form['amount'])
+    
+    # 1. Look up the student's phone number
+    conn = get_db()
+    cur = conn.cursor()
+    cur.execute("SELECT phone FROM students WHERE email = %s", (session['email'],))
+    phone = cur.fetchone()[0]
+    cur.close()
+    conn.close()
+    
+    # 2. Fire the STK Push
+    trigger_stk_push(phone, amount)
+    
+    # 3. Tell the user to look at their phone
+    flash(f"Check your phone! Enter your M-Pesa PIN to deposit KES {amount}.")
+    return redirect('/dashboard')
+
+
+@app.route('/withdraw', methods=['POST'])
+def withdraw():
+    if 'email' not in session:
+        return redirect('/login')
+        
+    amount = float(request.form['amount'])
+    entered_pin = request.form['pin']
+    
+    conn = get_db()
+    cur = conn.cursor()
+    
+    # 1. Get the user's phone, balance, and security PIN
+    cur.execute("SELECT phone, usable_balance, parent_pin FROM students WHERE email = %s", (session['email'],))
+    user_data = cur.fetchone()
+    phone = user_data[0]
+    balance = user_data[1]
+    correct_pin = user_data[2]
+    cur.close()
+    conn.close()
+    
+    # 2. Security Check: Did they type the correct 4-digit Emergency PIN?
+    if entered_pin != correct_pin:
+        flash("❌ Security Alert: Incorrect Emergency PIN.")
+        return redirect('/dashboard')
+        
+    # 3. Logic Check: Do they actually have enough money?
+    if amount > balance:
+        flash("❌ Insufficient funds in your Usable Balance.")
+        return redirect('/dashboard')
+        
+    # 4. Fire the B2C Payout
+    trigger_b2c_payout(phone, amount)
+    
+    flash(f"✅ Withdrawal authorized! KES {amount} is being sent to your phone.")
+    return redirect('/dashboard')
 # ---------- FINANCIAL OPERATIONS ----------
 
 @app.route("/spend", methods=["POST"])
@@ -630,5 +691,67 @@ def mpesa_callback():
     except Exception as e:
         print(f"🚨 CRITICAL WEBHOOK ERROR: {e}")
         return jsonify({"ResultCode": 1, "ResultDesc": "Server Error"}), 500
+# ---------- M-PESA B2C (WITHDRAWAL) WEBHOOKS ----------
+
+@app.route('/api/b2c_timeout', methods=['POST'])
+def b2c_timeout():
+    # If Safaricom's system crashes, they ping this URL.
+    print("🚨 SAFARICOM B2C TIMEOUT 🚨")
+    print(request.get_json())
+    return jsonify({"ResultCode": 0, "ResultDesc": "Accepted"}), 200
+
+@app.route('/api/b2c_result', methods=['POST'])
+def b2c_result():
+    # 1. Catch the receipt
+    b2c_response = request.get_json()
+    print("--- 📤 NEW B2C WITHDRAWAL RECEIPT ---")
+    print(b2c_response) # Logs to Render
+    
+    try:
+        result = b2c_response['Result']
+        result_code = result['ResultCode']
+        
+        # 2. Logic Check: Did the money actually leave our Paybill?
+        if result_code == 0:
+            result_params = result['ResultParameters']['ResultParameter']
+            
+            amount = 0
+            receiver_info = ""
+            
+            # 3. Dig through the Safaricom array to find the Amount and Phone Number
+            for param in result_params:
+                if param['Key'] == 'TransactionAmount':
+                    amount = param['Value']
+                elif param['Key'] == 'ReceiverPartyPublicName':
+                    # Safaricom returns "2547XXXXXXXX - NAME". We just want the number.
+                    receiver_info = str(param['Value']).split(' - ')[0] 
+            
+            print(f"💸 SUCCESS! Sent KES {amount} to {receiver_info}.")
+            
+            # 4. Update the Ledger: Deduct the money from the student's vault!
+            conn = get_db()
+            cur = conn.cursor()
+            
+            cur.execute("""
+                UPDATE students 
+                SET usable_balance = usable_balance - %s 
+                WHERE phone = %s
+            """, (amount, receiver_info))
+            
+            conn.commit()
+            cur.close()
+            conn.close()
+            
+            print("✅ Ledger Updated: Withdrawn amount deducted from student balance.")
+            
+        else:
+            fail_reason = result.get('ResultDesc', 'Unknown Error')
+            print(f"❌ Withdrawal Failed. Reason: {fail_reason}. (Ledger not deducted)")
+            
+        return jsonify({"ResultCode": 0, "ResultDesc": "Accepted"}), 200
+
+    except Exception as e:
+        print(f"🚨 CRITICAL B2C WEBHOOK ERROR: {e}")
+        return jsonify({"ResultCode": 1, "ResultDesc": "Error processing receipt"}), 500
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=10000)

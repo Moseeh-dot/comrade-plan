@@ -101,6 +101,36 @@
                 </div>
             </div>
 
+            <div class="card full" style="margin-top: 20px; border-top: 4px solid #10b981;">
+                <h3>M-Pesa Vault Controls</h3>
+                <div style="display: flex; gap: 20px; flex-wrap: wrap; margin-top: 15px;">
+
+                    <div
+                        style="flex: 1; background: rgba(16, 185, 129, 0.05); padding: 15px; border-radius: 8px; border: 1px solid #10b981;">
+                        <h4 style="margin-top: 0; color: #10b981;">📥 Top Up Vault</h4>
+                        <form action="/deposit" method="POST">
+                            <input type="number" name="amount" placeholder="Amount (KES)" min="1" required
+                                style="width: 100%; margin-bottom: 10px;">
+                            <button type="submit" style="width: 100%; background: #10b981; color: white;">Trigger M-Pesa
+                                Prompt</button>
+                        </form>
+                    </div>
+
+                    <div
+                        style="flex: 1; background: rgba(239, 68, 68, 0.05); padding: 15px; border-radius: 8px; border: 1px solid #ef4444;">
+                        <h4 style="margin-top: 0; color: #ef4444;">📤 Emergency Withdraw</h4>
+                        <form action="/withdraw" method="POST">
+                            <input type="number" name="amount" placeholder="Amount (KES)" min="1" required
+                                style="width: 100%; margin-bottom: 10px;">
+                            <input type="password" name="pin" placeholder="4-Digit Vault PIN" maxlength="4" required
+                                style="width: 100%; margin-bottom: 10px; text-align: center; letter-spacing: 3px;">
+                            <button type="submit" style="width: 100%; background: #ef4444; color: white;">Withdraw to
+                                M-Pesa</button>
+                        </form>
+                    </div>
+
+                </div>
+            </div>
             <div class="card full">
                 <h3>Log Spending</h3>
                 <form action="{{ url_for('spend') }}" method="POST">

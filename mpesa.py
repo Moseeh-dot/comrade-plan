@@ -1,13 +1,21 @@
 import requests
-from requests.auth import HTTPBasicAuth
 import base64
 from datetime import datetime
+import os
+from dotenv import load_dotenv
 
-# --- COMRADE PLAN: MASTER CREDENTIALS ---
-CONSUMER_KEY = "wr3aTUAOQWFCLrbEkuyvYDZydoQCxbGxzqrEMOQIn6fxr04f"
-CONSUMER_SECRET = "2sYAzSRdl0wmZc6T3swMuY1xnE7Z6unNZEDsYEa0tKq0TKa9SdBW2iPyJPKucl6Y"
-PASSKEY = "bfb279f9aa9bdbcf158e97dd71a467cd2e0c893059b10f78e6b72ada1ed2c919"
-BUSINESS_SHORTCODE = "174379"  # This is the universal Daraja Sandbox Paybill
+# Load the local vault if we are running on your laptop
+load_dotenv()
+
+# --- COMRADE PLAN: MASTER CREDENTIALS (SECURED) ---
+CONSUMER_KEY = os.getenv("CONSUMER_KEY")
+CONSUMER_SECRET = os.getenv("CONSUMER_SECRET")
+PASSKEY = os.getenv("PASSKEY")
+BUSINESS_SHORTCODE = os.getenv("BUSINESS_SHORTCODE")
+
+# --- B2C WITHDRAWAL KEYS (SECURED) ---
+INITIATOR_NAME = os.getenv("INITIATOR_NAME")
+SECURITY_CREDENTIAL = os.getenv("SECURITY_CREDENTIAL")
 
 def get_access_token():
     api_url = "https://sandbox.safaricom.co.ke/oauth/v1/generate?grant_type=client_credentials"
@@ -63,11 +71,44 @@ def trigger_stk_push(phone_number, amount):
         print(response.json())
     except Exception as e:
         print(f"❌ STK Push Error: {e}")
+def trigger_b2c_payout(phone_number, amount):
+    print("\n--- INITIATING EMERGENCY WITHDRAWAL ---")
+    print("Step 1: Getting Access Token...")
+    access_token = get_access_token()
+    if not access_token:
+        return
 
+    print("Step 2: Preparing the Cash Briefcase...")
+    api_url = "https://sandbox.safaricom.co.ke/mpesa/b2c/v1/paymentrequest"
+    headers = {
+        "Authorization": f"Bearer {access_token}",
+        "Content-Type": "application/json"
+    }
+
+    payload = {
+        "InitiatorName": INITIATOR_NAME,
+        "SecurityCredential": SECURITY_CREDENTIAL,
+        "CommandID": "BusinessPayment",
+        "Amount": amount,
+        "PartyA": BUSINESS_SHORTCODE,
+        "PartyB": phone_number,
+        "Remarks": "Comrade Plan Emergency Withdrawal",
+        "QueueTimeOutURL": "https://comrade-plan.onrender.com/api/b2c_timeout",
+        "ResultURL": "https://comrade-plan.onrender.com/api/b2c_result",
+        "Occasion": "Withdrawal"
+    }
+
+    try:
+        print(f"Step 3: Commanding Safaricom to send KES {amount} to {phone_number}...")
+        response = requests.post(api_url, json=payload, headers=headers, timeout=10)
+        print("\n--- SAFARICOM B2C RESPONSE ---")
+        print(response.json())
+    except Exception as e:
+        print(f"❌ B2C Error: {e}")
 if __name__ == "__main__":
     # TESTING ZONE
-    # Enter your actual Safaricom number below. MUST start with 254 (e.g., 254712345678)
-    my_test_phone = "254758384925" 
+    my_test_phone = "254758384925" # Make sure your number is here!
     
-    # Let's try to ask your phone for 1 Shilling
-    trigger_stk_push(my_test_phone, 1)
+    # Try to SEND 1 Shilling FROM the Paybill TO your phone
+    trigger_b2c_payout(my_test_phone, 1)
+    
