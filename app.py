@@ -1,17 +1,18 @@
-from flask import Flask, render_template, request, redirect, session, flash, url_for
-from flask_mail import Mail, Message
-import psycopg2
-from psycopg2.extras import RealDictCursor
-import secrets
 import os
-import string
-from datetime import date
-from werkzeug.security import generate_password_hash, check_password_hash
-from threading import Thread
-from datetime import timedelta
 import io
 import csv
-from flask import Flask, render_template, request, redirect, session, jsonify
+import string
+import secrets
+from datetime import date, timedelta
+from threading import Thread
+
+from flask import Flask, render_template, request, redirect, session, flash, url_for, jsonify
+from flask_mail import Mail, Message
+from werkzeug.security import generate_password_hash, check_password_hash
+import psycopg2
+from psycopg2.extras import RealDictCursor
+
+# Connect to the M-Pesa Engine
 from mpesa import trigger_stk_push, trigger_b2c_payout
 
 app = Flask(__name__)
@@ -67,6 +68,7 @@ def setup_database():
                     email VARCHAR(100) UNIQUE NOT NULL,
                     password VARCHAR(255) NOT NULL,
                     parent_pin VARCHAR(10),
+                    phone VARCHAR(20),
                     usable_balance FLOAT DEFAULT 0,
                     sealed_balance FLOAT DEFAULT 0,
                     emergency_fund FLOAT DEFAULT 0,
@@ -136,11 +138,8 @@ def register():
             email = request.form["email"].strip().lower()
             password = generate_password_hash(request.form["password"])
             pin = request.form["pin"] 
-            
-            # --- 1. NEW: Catch the phone number from the form ---
             phone = request.form["phone"].strip()
             
-            # --- 2. NEW: Validate the phone format ---
             if not phone.startswith("254"):
                 flash("Error: Phone number must start with 254 (e.g., 254712345678).")
                 return redirect(url_for('register'))
@@ -163,7 +162,6 @@ def register():
                 daily_rate = round((money - emergency) / days, 2)
                 sealed = round(money - emergency - daily_rate, 2)
 
-                # --- 3. NEW: Added 'phone' to the Columns, the %s list, and the Variables tuple ---
                 cur.execute("""INSERT INTO students (name, email, password, parent_pin, phone, usable_balance, 
                     sealed_balance, emergency_fund, daily_rate, days_in_plan, last_day, verification_token, recovery_code)
                     VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""", 
@@ -190,6 +188,7 @@ def register():
             flash("Please enter valid numbers for money and days.")
             
     return render_template("register.html")
+
 # ---------- DASHBOARD & CORE LOGIC ----------
 
 @app.route("/dashboard")
@@ -244,62 +243,83 @@ def dashboard():
 
 @app.route('/deposit', methods=['POST'])
 def deposit():
-    if 'email' not in session:
-        return redirect('/login')
+    # 1. FIXED: Correctly check for student_id instead of email
+    if 'student_id' not in session:
+        return redirect(url_for('index'))
         
-    amount = float(request.form['amount'])
-    
-    # 1. Look up the student's phone number
-    conn = get_db()
-    cur = conn.cursor()
-    cur.execute("SELECT phone FROM students WHERE email = %s", (session['email'],))
-    phone = cur.fetchone()[0]
-    cur.close()
-    conn.close()
-    
-    # 2. Fire the STK Push
-    trigger_stk_push(phone, amount)
-    
-    # 3. Tell the user to look at their phone
-    flash(f"Check your phone! Enter your M-Pesa PIN to deposit KES {amount}.")
+    conn, cur = None, None
+    try:
+        amount = float(request.form['amount'])
+        
+        conn = get_db()
+        cur = conn.cursor()
+        # 2. FIXED: Pull phone number securely using the session ID
+        cur.execute("SELECT phone FROM students WHERE id = %s", (session['student_id'],))
+        phone_result = cur.fetchone()
+        
+        if not phone_result or not phone_result[0]:
+            flash("❌ Please link an M-Pesa number to your account first.")
+            return redirect('/dashboard')
+            
+        phone = phone_result[0]
+        
+        # 3. Fire the STK Push
+        trigger_stk_push(phone, amount)
+        flash(f"Check your phone! Enter your M-Pesa PIN to deposit KES {amount}.")
+        
+    except Exception as e:
+        print(f"Deposit Error: {e}")
+        flash("❌ Error initiating deposit. Please try again.")
+    finally:
+        if cur: cur.close()
+        if conn: conn.close()
+        
     return redirect('/dashboard')
 
 
 @app.route('/withdraw', methods=['POST'])
 def withdraw():
-    if 'email' not in session:
-        return redirect('/login')
+    # 1. FIXED: Correctly check for student_id instead of email
+    if 'student_id' not in session:
+        return redirect(url_for('index'))
         
-    amount = float(request.form['amount'])
-    entered_pin = request.form['pin']
-    
-    conn = get_db()
-    cur = conn.cursor()
-    
-    # 1. Get the user's phone, balance, and security PIN
-    cur.execute("SELECT phone, usable_balance, parent_pin FROM students WHERE email = %s", (session['email'],))
-    user_data = cur.fetchone()
-    phone = user_data[0]
-    balance = user_data[1]
-    correct_pin = user_data[2]
-    cur.close()
-    conn.close()
-    
-    # 2. Security Check: Did they type the correct 4-digit Emergency PIN?
-    if entered_pin != correct_pin:
-        flash("❌ Security Alert: Incorrect Emergency PIN.")
-        return redirect('/dashboard')
+    conn, cur = None, None
+    try:
+        amount = float(request.form['amount'])
+        entered_pin = request.form['pin']
         
-    # 3. Logic Check: Do they actually have enough money?
-    if amount > balance:
-        flash("❌ Insufficient funds in your Usable Balance.")
-        return redirect('/dashboard')
+        conn = get_db()
+        cur = conn.cursor()
         
-    # 4. Fire the B2C Payout
-    trigger_b2c_payout(phone, amount)
-    
-    flash(f"✅ Withdrawal authorized! KES {amount} is being sent to your phone.")
+        # 2. FIXED: Lookup by ID
+        cur.execute("SELECT phone, usable_balance, parent_pin FROM students WHERE id = %s", (session['student_id'],))
+        user_data = cur.fetchone()
+        
+        phone = user_data[0]
+        balance = user_data[1]
+        correct_pin = user_data[2]
+        
+        if entered_pin != correct_pin:
+            flash("❌ Security Alert: Incorrect Emergency PIN.")
+            return redirect('/dashboard')
+            
+        if amount > balance:
+            flash("❌ Insufficient funds in your Usable Balance.")
+            return redirect('/dashboard')
+            
+        # 3. Fire the B2C Payout
+        trigger_b2c_payout(phone, amount)
+        flash(f"✅ Withdrawal authorized! KES {amount} is being sent to your phone.")
+        
+    except Exception as e:
+        print(f"Withdraw Error: {e}")
+        flash("❌ Error processing withdrawal.")
+    finally:
+        if cur: cur.close()
+        if conn: conn.close()
+        
     return redirect('/dashboard')
+
 # ---------- FINANCIAL OPERATIONS ----------
 
 @app.route("/spend", methods=["POST"])
@@ -351,7 +371,7 @@ def emergency_release():
         if conn: conn.close()
     return redirect(url_for('dashboard'))
 
-# ---------- ACCOUNT RECOVERY & LEADERBOARD (Restored) ----------
+# ---------- ACCOUNT RECOVERY & LEADERBOARD ----------
 
 @app.route("/forgot_password", methods=["GET", "POST"])
 def forgot_password():
@@ -441,7 +461,6 @@ def logout():
     session.clear()
     return redirect(url_for('index'))
 
-# Adding missing form endpoints to prevent HTML BuildErrors
 @app.route("/add_emergency", methods=["POST"])
 def add_emergency():
     if 'student_id' not in session: 
@@ -451,7 +470,6 @@ def add_emergency():
         conn = get_db()
         cur = conn.cursor(cursor_factory=RealDictCursor)
         
-        # Check if they actually have enough usable cash to lock away
         cur.execute("SELECT usable_balance FROM students WHERE id=%s", (session['student_id'],))
         balance = cur.fetchone()["usable_balance"]
         
@@ -477,7 +495,6 @@ def topup():
         days = int(request.form["days"])
         buffer_pct = float(request.form.get("buffer_percent", 10)) / 100
         
-        # Calculate the new metrics based on the incoming allowance
         new_emergency = round(money * buffer_pct, 2)
         new_daily_rate = round((money - new_emergency) / days, 2)
         new_sealed = round(money - new_emergency - new_daily_rate, 2)
@@ -485,7 +502,6 @@ def topup():
         conn = get_db()
         cur = conn.cursor()
         
-        # Add the new funds to whatever balance they already have
         cur.execute("""UPDATE students 
                        SET usable_balance = usable_balance + %s,
                            sealed_balance = sealed_balance + %s,
@@ -511,8 +527,6 @@ def reset_plan():
     try:
         conn = get_db()
         cur = conn.cursor()
-        
-        # Wipe all financial balances and the streak
         cur.execute("""UPDATE students 
                        SET usable_balance = 0, sealed_balance = 0, emergency_fund = 0, 
                            daily_rate = 0, days_in_plan = 0, streak = 0 
@@ -525,19 +539,17 @@ def reset_plan():
     finally:
         if 'conn' in locals() and conn: conn.close()
     return redirect(url_for('dashboard'))
+
 # ---------- PIN RESET LOGIC (OTP FLOW) ----------
 
 @app.route("/request_pin_reset", methods=["POST"])
 def request_pin_reset():
     if 'student_id' not in session: return redirect(url_for('index'))
     
-    # Generate a 6-digit One-Time Password (OTP)
     otp_token = ''.join(secrets.choice(string.digits) for _ in range(6))
-    
     conn, cur = None, None
     try:
         conn = get_db(); cur = conn.cursor(cursor_factory=RealDictCursor)
-        # Save token to db and grab user's email simultaneously
         cur.execute("UPDATE students SET verification_token=%s WHERE id=%s RETURNING email, name", 
                     (otp_token, session['student_id']))
         user = cur.fetchone()
@@ -570,7 +582,6 @@ def verify_pin_reset():
         cur.execute("SELECT verification_token FROM students WHERE id=%s", (session['student_id'],))
         user = cur.fetchone()
         
-        # Logically verify the token matches and isn't empty
         if user and user['verification_token'] == token_submitted and token_submitted != "":
             cur.execute("UPDATE students SET parent_pin=%s, verification_token=NULL WHERE id=%s", 
                         (new_pin, session['student_id']))
@@ -584,13 +595,11 @@ def verify_pin_reset():
         if conn: conn.close()
     return redirect(url_for('dashboard'))
 
-
 # ---------- AUTOMATED LEDGER BACKUP ----------
 
 @app.route("/secure_ledger_backup/<secret_token>")
 def secure_ledger_backup(secret_token):
-    # 1. The Bouncer: Only allow the backup to run if the exact master token is used
-    MASTER_TOKEN = "comrade_founder_xyz_2026" # Change this to your own random password
+    MASTER_TOKEN = "comrade_founder_xyz_2026" 
     if secret_token != MASTER_TOKEN:
         return "Unauthorized Access", 401
         
@@ -599,26 +608,20 @@ def secure_ledger_backup(secret_token):
         conn = get_db()
         cur = conn.cursor(cursor_factory=RealDictCursor)
         
-        # 2. Extract the critical financial data (We don't need passwords, just the money)
         cur.execute("SELECT id, name, email, usable_balance, sealed_balance, emergency_fund, streak FROM students")
         students = cur.fetchall()
         
-        # 3. Convert the data into a CSV spreadsheet in the server's memory
         si = io.StringIO()
-        # Define the exact columns for your spreadsheet
         writer = csv.DictWriter(si, fieldnames=["id", "name", "email", "usable_balance", "sealed_balance", "emergency_fund", "streak"])
         writer.writeheader()
         writer.writerows(students)
         
-        # 4. Attach the spreadsheet to an email and send it to yourself
         msg = Message("📊 Comrade Plan: Daily Ledger Backup", 
                       sender=app.config['MAIL_USERNAME'], 
-                      recipients=[app.config['MAIL_USERNAME']]) # Sends to your own Gmail
+                      recipients=[app.config['MAIL_USERNAME']]) 
         
         msg.body = "Attached is the exact financial state of all Comrade Plan users as of right now. Keep this safe."
         msg.attach("comrade_ledger_backup.csv", "text/csv", si.getvalue())
-        
-        # Send synchronously here to ensure it actually fires before the server sleeps
         mail.send(msg) 
         
         return "Backup Spreadsheet securely compiled and emailed to founder.", 200
@@ -630,25 +633,20 @@ def secure_ledger_backup(secret_token):
         if cur: cur.close()
         if conn: conn.close()
 
-# ---------- M-PESA AUTOMATED ACCOUNTING WEBHOOK ----------
+# ---------- M-PESA AUTOMATED ACCOUNTING WEBHOOKS ----------
 
 @app.route('/api/mpesa_callback', methods=['POST'])
 def mpesa_callback():
-    # 1. Catch the raw JSON envelope from Safaricom
     mpesa_response = request.get_json()
     print("--- 📥 NEW M-PESA RECEIPT RECEIVED ---")
-    print(mpesa_response) # Logs the raw receipt to your Render dashboard
+    print(mpesa_response) 
 
     try:
-        # 2. Crack open the envelope
         callback_data = mpesa_response['Body']['stkCallback']
         result_code = callback_data['ResultCode']
         
-        # 3. Logic Check: Did they actually pay? (ResultCode 0 means Success)
         if result_code == 0:
-            # Dig into the Metadata to extract the exact amount and phone number
             metadata = callback_data['CallbackMetadata']['Item']
-            
             amount = 0
             phone_number = ""
             receipt_number = ""
@@ -657,101 +655,84 @@ def mpesa_callback():
                 if item['Name'] == 'Amount':
                     amount = item['Value']
                 elif item['Name'] == 'PhoneNumber':
-                    phone_number = str(item['Value']) # Safaricom sends it as 2547...
+                    phone_number = str(item['Value']) 
                 elif item['Name'] == 'MpesaReceiptNumber':
                     receipt_number = item['Value']
                     
             print(f"💰 SUCCESS! Received KES {amount} from {phone_number}. Receipt: {receipt_number}")
             
-            # 4. Update the Ledger (PostgreSQL)
             conn = get_db()
             cur = conn.cursor()
-            
-            # Find the student who owns this phone number and add the money to their vault
             cur.execute("""
                 UPDATE students 
                 SET usable_balance = usable_balance + %s 
                 WHERE phone = %s
             """, (amount, phone_number)) 
-            
             conn.commit()
             cur.close()
             conn.close()
             
-            print("✅ Database updated successfully. The student now has the money.")
-            
+            print("✅ Database updated successfully.")
         else:
-            # ResultCode is not 0. They cancelled the prompt, had no money, or typed the wrong PIN.
             fail_reason = callback_data.get('ResultDesc', 'Unknown Reason')
             print(f"❌ Transaction Failed or Cancelled. Reason: {fail_reason}")
 
-        # 5. The Handshake Out: Tell Safaricom we received the message so they stop trying to send it
         return jsonify({"ResultCode": 0, "ResultDesc": "Accepted"}), 200
 
     except Exception as e:
         print(f"🚨 CRITICAL WEBHOOK ERROR: {e}")
         return jsonify({"ResultCode": 1, "ResultDesc": "Server Error"}), 500
-# ---------- M-PESA B2C (WITHDRAWAL) WEBHOOKS ----------
 
 @app.route('/api/b2c_timeout', methods=['POST'])
 def b2c_timeout():
-    # If Safaricom's system crashes, they ping this URL.
     print("🚨 SAFARICOM B2C TIMEOUT 🚨")
     print(request.get_json())
     return jsonify({"ResultCode": 0, "ResultDesc": "Accepted"}), 200
 
 @app.route('/api/b2c_result', methods=['POST'])
 def b2c_result():
-    # 1. Catch the receipt
     b2c_response = request.get_json()
     print("--- 📤 NEW B2C WITHDRAWAL RECEIPT ---")
-    print(b2c_response) # Logs to Render
+    print(b2c_response) 
     
     try:
         result = b2c_response['Result']
         result_code = result['ResultCode']
         
-        # 2. Logic Check: Did the money actually leave our Paybill?
         if result_code == 0:
             result_params = result['ResultParameters']['ResultParameter']
-            
             amount = 0
             receiver_info = ""
             
-            # 3. Dig through the Safaricom array to find the Amount and Phone Number
             for param in result_params:
                 if param['Key'] == 'TransactionAmount':
                     amount = param['Value']
                 elif param['Key'] == 'ReceiverPartyPublicName':
-                    # Safaricom returns "2547XXXXXXXX - NAME". We just want the number.
                     receiver_info = str(param['Value']).split(' - ')[0] 
             
             print(f"💸 SUCCESS! Sent KES {amount} to {receiver_info}.")
             
-            # 4. Update the Ledger: Deduct the money from the student's vault!
             conn = get_db()
             cur = conn.cursor()
-            
             cur.execute("""
                 UPDATE students 
                 SET usable_balance = usable_balance - %s 
                 WHERE phone = %s
             """, (amount, receiver_info))
-            
             conn.commit()
             cur.close()
             conn.close()
             
-            print("✅ Ledger Updated: Withdrawn amount deducted from student balance.")
-            
+            print("✅ Ledger Updated.")
         else:
             fail_reason = result.get('ResultDesc', 'Unknown Error')
-            print(f"❌ Withdrawal Failed. Reason: {fail_reason}. (Ledger not deducted)")
+            print(f"❌ Withdrawal Failed. Reason: {fail_reason}.")
             
         return jsonify({"ResultCode": 0, "ResultDesc": "Accepted"}), 200
 
     except Exception as e:
         print(f"🚨 CRITICAL B2C WEBHOOK ERROR: {e}")
         return jsonify({"ResultCode": 1, "ResultDesc": "Error processing receipt"}), 500
+
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=10000)
