@@ -46,6 +46,11 @@
                 <input type="email" name="email" placeholder="University or Personal Email" required>
                 <input type="password" name="password" placeholder="Account Password" required>
 
+                <label for="phone" style="margin-top: 10px; display: block; font-size: 0.9rem;">Safaricom M-Pesa
+                    (Format: 2547...)</label>
+                <input type="text" id="phone" name="phone" placeholder="2547XXXXXXXX" pattern="^254\d{9}$"
+                    title="Must start with 254 and be exactly 12 digits" required>
+
                 <hr style="border: 0.5px solid #334155; margin: 20px 0;">
 
                 <h3>Security Control</h3>

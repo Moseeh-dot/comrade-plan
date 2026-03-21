@@ -135,6 +135,15 @@ def register():
             email = request.form["email"].strip().lower()
             password = generate_password_hash(request.form["password"])
             pin = request.form["pin"] 
+            
+            # --- 1. NEW: Catch the phone number from the form ---
+            phone = request.form["phone"].strip()
+            
+            # --- 2. NEW: Validate the phone format ---
+            if not phone.startswith("254"):
+                flash("Error: Phone number must start with 254 (e.g., 254712345678).")
+                return redirect(url_for('register'))
+
             token = secrets.token_hex(16)
             recovery_code = ''.join(secrets.choice(string.ascii_uppercase + string.digits) for _ in range(8))
             
@@ -153,10 +162,12 @@ def register():
                 daily_rate = round((money - emergency) / days, 2)
                 sealed = round(money - emergency - daily_rate, 2)
 
-                cur.execute("""INSERT INTO students (name, email, password, parent_pin, usable_balance, 
+                # --- 3. NEW: Added 'phone' to the Columns, the %s list, and the Variables tuple ---
+                cur.execute("""INSERT INTO students (name, email, password, parent_pin, phone, usable_balance, 
                     sealed_balance, emergency_fund, daily_rate, days_in_plan, last_day, verification_token, recovery_code)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""", 
-                    (name, email, password, pin, daily_rate, sealed, emergency, daily_rate, days, date.today().isoformat(), token, recovery_code))
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""", 
+                    (name, email, password, pin, phone, daily_rate, sealed, emergency, daily_rate, days, date.today().isoformat(), token, recovery_code))
+                
                 conn.commit()
                 
                 verify_url = url_for('verify_email', token=token, _external=True)
@@ -167,6 +178,7 @@ def register():
                 
                 flash("Success! Check your email to verify.")
                 return redirect(url_for('index'))
+                
             except Exception as e:
                 print(f"Reg DB Error: {e}")
                 flash("Registration failed. Email may already be in use.")
@@ -177,7 +189,6 @@ def register():
             flash("Please enter valid numbers for money and days.")
             
     return render_template("register.html")
-
 # ---------- DASHBOARD & CORE LOGIC ----------
 
 @app.route("/dashboard")
